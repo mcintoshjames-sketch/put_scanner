@@ -1,0 +1,22 @@
+# Ignore Python caches and venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.log
