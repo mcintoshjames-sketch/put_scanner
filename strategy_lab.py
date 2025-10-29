@@ -92,9 +92,9 @@ except Exception:  # pragma: no cover - optional
 def _init_data_calls():
     if "data_calls" not in st.session_state:
         st.session_state["data_calls"] = {
-            "price": {"polygon": 0, "yahoo": 0},
-            "expirations": {"polygon": 0, "yahoo": 0},
-            "chain": {"polygon": 0, "yahoo": 0},
+            "price": {"yfinance": 0, "schwab": 0, "polygon": 0},
+            "expirations": {"yfinance": 0, "schwab": 0, "polygon": 0},
+            "chain": {"yfinance": 0, "schwab": 0, "polygon": 0},
         }
     if "last_provider" not in st.session_state:
         st.session_state["last_provider"] = {
@@ -106,9 +106,9 @@ def _init_data_calls():
         }
     if "data_errors" not in st.session_state:
         st.session_state["data_errors"] = {
-            "price": {"polygon": None, "yahoo": None},
-            "expirations": {"polygon": None, "yahoo": None},
-            "chain": {"polygon": None, "yahoo": None},
+            "price": {"yfinance": None, "schwab": None, "polygon": None},
+            "expirations": {"yfinance": None, "schwab": None, "polygon": None},
+            "chain": {"yfinance": None, "schwab": None, "polygon": None},
         }
 
 
@@ -300,14 +300,14 @@ def fetch_price_uncached(symbol: str) -> float:
     
     # Fallback to yfinance
     try:
-        st.session_state["last_attempt"]["price"] = "yahoo"
+        st.session_state["last_attempt"]["price"] = "yfinance"
         t = yf.Ticker(symbol)
         val = float(t.history(period="1d")["Close"].iloc[-1])
-        _record_data_source("price", "yahoo")
-        st.session_state["data_errors"]["price"]["yahoo"] = None
+        _record_data_source("price", "yfinance")
+        st.session_state["data_errors"]["price"]["yfinance"] = None
         return val
     except Exception as e:
-        st.session_state["data_errors"]["price"]["yahoo"] = str(e)
+        st.session_state["data_errors"]["price"]["yfinance"] = str(e)
         return float("nan")
 
 
@@ -350,13 +350,13 @@ def fetch_expirations_uncached(symbol: str) -> list:
     
     # Fallback to yfinance
     try:
-        st.session_state["last_attempt"]["expirations"] = "yahoo"
+        st.session_state["last_attempt"]["expirations"] = "yfinance"
         vals = list(yf.Ticker(symbol).options or [])
-        _record_data_source("expirations", "yahoo")
-        st.session_state["data_errors"]["expirations"]["yahoo"] = None
+        _record_data_source("expirations", "yfinance")
+        st.session_state["data_errors"]["expirations"]["yfinance"] = None
         return vals
     except Exception as e:
-        st.session_state["data_errors"]["expirations"]["yahoo"] = str(e)
+        st.session_state["data_errors"]["expirations"]["yfinance"] = str(e)
         return []
 
 
@@ -402,7 +402,7 @@ def fetch_chain_uncached(symbol: str, expiration: str) -> pd.DataFrame:
     except Exception as e:
         st.session_state["data_errors"]["chain"]["polygon"] = str(e)
     try:
-        st.session_state["last_attempt"]["chain"] = "yahoo"
+        st.session_state["last_attempt"]["chain"] = "yfinance"
         t = yf.Ticker(symbol)
         ch = t.option_chain(expiration)
         dfs = []
@@ -413,11 +413,11 @@ def fetch_chain_uncached(symbol: str, expiration: str) -> pd.DataFrame:
             tmp["type"] = typ
             dfs.append(tmp)
         out = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-        _record_data_source("chain", "yahoo")
-        st.session_state["data_errors"]["chain"]["yahoo"] = None
+        _record_data_source("chain", "yfinance")
+        st.session_state["data_errors"]["chain"]["yfinance"] = None
         return out
     except Exception as e:
-        st.session_state["data_errors"]["chain"]["yahoo"] = str(e)
+        st.session_state["data_errors"]["chain"]["yfinance"] = str(e)
         return pd.DataFrame()
 
 
@@ -2278,13 +2278,19 @@ with st.sidebar:
     # Diagnostics
     _init_data_calls()
     with st.expander("Diagnostics", expanded=False):
+        # Show provider system status
+        if USE_PROVIDER_SYSTEM:
+            st.success(f"✓ Provider System Active: {PROVIDER}")
+        else:
+            st.info("Using legacy provider system")
+        
         st.radio(
-            "Provider override",
-            options=["auto", "yahoo", "polygon"],
-            index=["auto", "yahoo", "polygon"].index(
+            "Provider override (legacy)",
+            options=["auto", "yfinance", "polygon"],
+            index=["auto", "yfinance", "polygon"].index(
                 str(st.session_state.get("provider_override", "auto"))),
             key="provider_override",
-            help="auto = try Polygon first, then Yahoo fallback; yahoo = force Yahoo-only; polygon = force Polygon-only (no fallback)",
+            help="auto = try Polygon first, then YFinance fallback; yfinance = force YFinance-only; polygon = force Polygon-only (no fallback). Note: New provider system takes precedence.",
         )
         st.caption(
             f"Polygon enabled by config (USE_POLYGON): {bool(USE_POLYGON)}; Client present: {POLY is not None}")
