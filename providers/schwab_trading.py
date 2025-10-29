@@ -203,10 +203,12 @@ class SchwabTrader:
         exp_date = datetime.strptime(expiration, "%Y-%m-%d")
         exp_str = exp_date.strftime("%y%m%d")
         
-        # Build option symbol: SYMBOL_YYMMDD_C/P_STRIKE
-        # Example: AAPL_250117C00150000 (AAPL Jan 17 2025 $150 Call)
+        # Build option symbol: SYMBOL   YYMMDDC/PSTRIKE (with spaces, not underscore)
+        # Schwab format: "TGT   251121P00085000" (symbol padded to 6 chars with spaces)
+        # Example: AAPL  250117C00150000 (AAPL Jan 17 2025 $150 Call)
         strike_str = f"{int(strike * 1000):08d}"
-        option_symbol = f"{symbol}_{exp_str}{option_type[0]}{strike_str}"
+        symbol_padded = f"{symbol:<6}"  # Left-align symbol, pad to 6 chars with spaces
+        option_symbol = f"{symbol_padded}{exp_str}{option_type[0]}{strike_str}"
         
         # Determine instruction from action
         instruction_map = {
