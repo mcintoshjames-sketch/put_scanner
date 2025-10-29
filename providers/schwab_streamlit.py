@@ -30,7 +30,21 @@ def get_schwab_client_from_streamlit_secrets():
         
         # Check if token is in secrets
         if "SCHWAB_TOKEN" in st.secrets:
-            token_data = dict(st.secrets["SCHWAB_TOKEN"])
+            token_dict = dict(st.secrets["SCHWAB_TOKEN"])
+            
+            # Create token structure expected by schwab-py
+            # It expects: {"creation_timestamp": ..., "token": {...}}
+            token_data = {
+                "creation_timestamp": token_dict.get("creation_timestamp", 0),
+                "token": {
+                    "access_token": token_dict.get("access_token"),
+                    "refresh_token": token_dict.get("refresh_token"),
+                    "token_type": token_dict.get("token_type", "Bearer"),
+                    "expires_in": token_dict.get("expires_in", 1800),
+                    "expires_at": token_dict.get("expires_at", 0),
+                    "scope": token_dict.get("scope", "api")
+                }
+            }
             
             # Create a temporary token file
             token_path = "/tmp/schwab_token.json"
@@ -61,17 +75,37 @@ def export_token_for_streamlit(token_file_path: str = "./schwab_token.json"):
         print("\n" + "="*60)
         print("Add this to your Streamlit Cloud secrets:")
         print("="*60)
-        print("\n[SCHWAB_TOKEN]")
-        for key, value in token_data.items():
-            if isinstance(value, str):
-                print(f'{key} = "{value}"')
-            else:
-                print(f'{key} = {value}')
-        print("\n" + "="*60)
-        print("\nDon't forget to also add:")
-        print("OPTIONS_PROVIDER = \"schwab\"")
+        print("\nOPTIONS_PROVIDER = \"schwab\"")
         print("SCHWAB_API_KEY = \"your_key\"")
         print("SCHWAB_APP_SECRET = \"your_secret\"")
+        print("SCHWAB_CALLBACK_URL = \"https://localhost\"")
+        print("\n[SCHWAB_TOKEN]")
+        
+        # Handle nested token structure from schwab-py
+        if "token" in token_data and isinstance(token_data["token"], dict):
+            # Extract token fields
+            token_dict = token_data["token"]
+            for key in ["access_token", "refresh_token", "token_type", "expires_in", "expires_at", "scope"]:
+                if key in token_dict:
+                    value = token_dict[key]
+                    if isinstance(value, str):
+                        print(f'{key} = "{value}"')
+                    else:
+                        print(f'{key} = {value}')
+            
+            # Add creation timestamp if present
+            if "creation_timestamp" in token_data:
+                print(f'creation_timestamp = {token_data["creation_timestamp"]}')
+        else:
+            # Flat structure
+            for key, value in token_data.items():
+                if isinstance(value, str):
+                    print(f'{key} = "{value}"')
+                else:
+                    print(f'{key} = {value}')
+        
+        print("\n" + "="*60)
+        print("\n✓ Copy the above to Streamlit Cloud → Settings → Secrets")
         print("="*60 + "\n")
     except FileNotFoundError:
         print(f"Token file not found: {token_file_path}")
