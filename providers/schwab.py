@@ -103,14 +103,28 @@ class SchwabClient:
             if not quote_data:
                 raise SchwabError(f"No quote data for {symbol}")
             
-            # Try last price, fall back to close
-            last = quote_data.get("lastPrice")
-            if last is not None:
+            # Try quote.lastPrice (most recent trade)
+            quote = quote_data.get("quote", {})
+            last = quote.get("lastPrice")
+            if last is not None and last > 0:
                 return float(last)
             
-            close = quote_data.get("closePrice")
-            if close is not None:
+            # Fall back to quote.closePrice
+            close = quote.get("closePrice")
+            if close is not None and close > 0:
                 return float(close)
+            
+            # Try regular market price
+            regular = quote_data.get("regular", {})
+            regular_last = regular.get("regularMarketLastPrice")
+            if regular_last is not None and regular_last > 0:
+                return float(regular_last)
+            
+            # Try extended hours
+            extended = quote_data.get("extended", {})
+            ext_last = extended.get("lastPrice")
+            if ext_last is not None and ext_last > 0:
+                return float(ext_last)
             
             raise SchwabError(f"No price data available for {symbol}")
         except Exception as e:
