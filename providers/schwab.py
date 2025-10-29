@@ -63,7 +63,16 @@ class SchwabClient:
     def _get_authenticated_client(self) -> client.Client:
         """Get authenticated Schwab client using token or OAuth flow."""
         try:
-            # Try to use existing token
+            # Try Streamlit secrets first (for Streamlit Cloud deployment)
+            try:
+                import streamlit as st
+                if hasattr(st, 'secrets') and "SCHWAB_TOKEN" in st.secrets:
+                    from providers.schwab_streamlit import get_schwab_client_from_streamlit_secrets
+                    return get_schwab_client_from_streamlit_secrets()
+            except (ImportError, Exception):
+                pass  # Not in Streamlit environment or secrets not configured
+            
+            # Try to use existing token file
             if os.path.exists(self.token_path):
                 c = auth.client_from_token_file(
                     self.token_path, self.api_key, self.app_secret

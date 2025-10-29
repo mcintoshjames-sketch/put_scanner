@@ -131,6 +131,73 @@ unset OPTIONS_PROVIDER
 
 *Note: Schwab API doesn't provide earnings dates directly. The scanner will skip earnings filtering when using Schwab.
 
+## Streamlit Cloud Deployment
+
+Since Streamlit apps can't handle OAuth callbacks directly, use this approach:
+
+### Step 1: Set Callback URL in Schwab Developer Portal
+
+```
+Callback URL: https://localhost
+```
+
+### Step 2: Authenticate Locally
+
+```bash
+# On your local machine
+export OPTIONS_PROVIDER=schwab
+export SCHWAB_API_KEY="your_app_key"
+export SCHWAB_APP_SECRET="your_secret"
+export SCHWAB_CALLBACK_URL="https://localhost"
+
+# Authenticate (creates schwab_token.json)
+python test_providers.py
+```
+
+### Step 3: Export Token for Streamlit
+
+```bash
+# Generate Streamlit secrets format
+python export_token_for_streamlit.py
+```
+
+This will output something like:
+
+```toml
+[SCHWAB_TOKEN]
+access_token = "your_access_token"
+refresh_token = "your_refresh_token"
+token_type = "Bearer"
+expires_in = 1800
+expires_at = 1234567890.123
+```
+
+### Step 4: Add to Streamlit Cloud Secrets
+
+1. Go to your Streamlit app: https://putscanner-htcyyzfgrd4mj3qgj3uzbr1.streamlit.app/
+2. Click Settings → Secrets
+3. Add all credentials:
+
+```toml
+OPTIONS_PROVIDER = "schwab"
+SCHWAB_API_KEY = "your_app_key"
+SCHWAB_APP_SECRET = "your_secret"
+SCHWAB_CALLBACK_URL = "https://localhost"
+
+[SCHWAB_TOKEN]
+access_token = "your_access_token_here"
+refresh_token = "your_refresh_token_here"
+token_type = "Bearer"
+expires_in = 1800
+expires_at = 1234567890.123
+```
+
+4. Save and restart your app
+
+### Token Refresh
+
+The refresh token is valid for 7 days. The app will automatically refresh your access token. If the refresh token expires, repeat steps 2-4.
+
 ## Troubleshooting
 
 ### "Failed to authenticate"
