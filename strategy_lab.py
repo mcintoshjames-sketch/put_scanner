@@ -12,12 +12,24 @@
 # - Best-practice playbook (exit, liquidity, tenor)
 #
 # Notes:
-# - Data: yfinance (non-pro). Quotes can be delayed, greeks limited.
+# - Data: Supports multiple providers (YFinance, Schwab, Polygon)
 # - This is educational tooling, not advice. Verify prior to trading.
 
 import math
 from datetime import datetime, timedelta, timezone
 import os
+
+# Import provider system
+try:
+    from providers import get_provider, OptionsProvider
+    from config import PROVIDER
+    PROVIDER_SYSTEM_AVAILABLE = True
+except Exception:
+    PROVIDER_SYSTEM_AVAILABLE = False
+    get_provider = None
+    PROVIDER = "yfinance"
+
+# Legacy Polygon support (will be replaced by provider system)
 try:
     from providers.polygon import PolygonClient, PolygonError  # type: ignore
 except Exception:  # providers client optional
@@ -37,28 +49,42 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ----------------------------- Utils -----------------------------
 
-# Optional external market data toggles (e.g., Polygon/Tradier helper in app.py)
+# Initialize the options provider
+PROVIDER_INSTANCE = None
+USE_PROVIDER_SYSTEM = False
+
+try:
+    if PROVIDER_SYSTEM_AVAILABLE and get_provider is not None:
+        PROVIDER_INSTANCE = get_provider()
+        USE_PROVIDER_SYSTEM = True
+        # Show provider status in sidebar (will be called later in UI section)
+except Exception as e:
+    # Provider system not available, fall back to legacy methods
+    USE_PROVIDER_SYSTEM = False
+
+# Legacy Polygon support (for backward compatibility)
 try:
     from app import POLY, USE_POLYGON  # type: ignore
 except Exception:  # pragma: no cover - optional
     POLY = None
     USE_POLYGON = False
     # Try to initialize Polygon client directly if running standalone
-    try:
-        from providers.polygon import PolygonClient
+    if not USE_PROVIDER_SYSTEM:
+        try:
+            from providers.polygon import PolygonClient
 
-        # Try Streamlit secrets first, then fall back to environment variable
-        polygon_key = ""
-        if hasattr(st, "secrets") and "POLYGON_API_KEY" in st.secrets:
-            polygon_key = st.secrets["POLYGON_API_KEY"]
-        else:
-            polygon_key = os.getenv("POLYGON_API_KEY", "")
+            # Try Streamlit secrets first, then fall back to environment variable
+            polygon_key = ""
+            if hasattr(st, "secrets") and "POLYGON_API_KEY" in st.secrets:
+                polygon_key = st.secrets["POLYGON_API_KEY"]
+            else:
+                polygon_key = os.getenv("POLYGON_API_KEY", "")
 
-        if polygon_key:
-            POLY = PolygonClient(api_key=polygon_key)
-            USE_POLYGON = True
-    except Exception:
-        pass  # Stay with Yahoo-only fallback
+            if polygon_key:
+                POLY = PolygonClient(api_key=polygon_key)
+                USE_POLYGON = True
+        except Exception:
+            pass  # Stay with Yahoo-only fallback
 
 # Diagnostics: Track which provider was used for each fetch_* call
 
@@ -108,73 +134,74 @@ def _polygon_ready() -> bool:
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_price(symbol: str) -> float:
-    """Get last price from POLY helper if available, else yfinance."""
+    """Get last price from configured provider (Schwab/Polygon/YFinance)."""
     try:
-        ov = _provider_override()
-        if ov == "polygon" and not _polygon_ready():
-            # Skip session state in parallel context
-            # st.session_state["last_attempt"]["price"] = "polygon"
-            # st.session_state["data_errors"]["price"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
-            return float("nan")
-        if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["price"] = "polygon"
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
             try:
-                val = float(POLY.last_price(symbol))
-                # _record_data_source("price", "polygon")
-                # st.session_state["data_errors"]["price"]["polygon"] = None
+                val = float(PROVIDER_INSTANCE.last_price(symbol))
                 return val
             except Exception as e:
-                # st.session_state["data_errors"]["price"]["polygon"] = str(e)
+                st.warning(f"Provider {PROVIDER} failed for {symbol}: {e}")
+                # Fall through to legacy methods
+        
+        # Legacy: Try provider override
+        ov = _provider_override()
+        if ov == "polygon" and not _polygon_ready():
+            return float("nan")
+        if ov != "yahoo" and _polygon_ready():
+            try:
+                val = float(POLY.last_price(symbol))
+                return val
+            except Exception as e:
                 if ov == "polygon":
                     return float("nan")
                 # else fall through to yahoo
     except Exception as e:
-        # st.session_state["data_errors"]["price"]["polygon"] = str(e)
         pass
+    
+    # Fallback to yfinance
     t = yf.Ticker(symbol)
     try:
-        # st.session_state["last_attempt"]["price"] = "yahoo"
         val = float(t.history(period="1d")["Close"].iloc[-1])
-        # _record_data_source("price", "yahoo")
-        # st.session_state["data_errors"]["price"]["yahoo"] = None
         return val
     except Exception as e:
-        # st.session_state["data_errors"]["price"]["yahoo"] = str(e)
         return float("nan")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_expirations(symbol: str) -> list:
-    """List option expirations using POLY helper if available, else yfinance."""
+    """List option expirations using configured provider."""
     try:
-        ov = _provider_override()
-        if ov == "polygon" and not _polygon_ready():
-            # st.session_state["last_attempt"]["expirations"] = "polygon"
-            # st.session_state["data_errors"]["expirations"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
-            return []
-        if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["expirations"] = "polygon"
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
             try:
-                exps = POLY.expirations(symbol)
-                # _record_data_source("expirations", "polygon")
-                # st.session_state["data_errors"]["expirations"]["polygon"] = None
+                exps = PROVIDER_INSTANCE.expirations(symbol)
                 return list(exps or [])
             except Exception as e:
-                # st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
+                st.warning(f"Provider {PROVIDER} failed for {symbol} expirations: {e}")
+                # Fall through to legacy methods
+        
+        # Legacy: Try provider override
+        ov = _provider_override()
+        if ov == "polygon" and not _polygon_ready():
+            return []
+        if ov != "yahoo" and _polygon_ready():
+            try:
+                exps = POLY.expirations(symbol)
+                return list(exps or [])
+            except Exception as e:
                 if ov == "polygon":
                     return []
                 # else fall through
     except Exception as e:
-        # st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
         pass
+    
+    # Fallback to yfinance
     try:
-        # st.session_state["last_attempt"]["expirations"] = "yahoo"
         vals = list(yf.Ticker(symbol).options or [])
-        # _record_data_source("expirations", "yahoo")
-        # st.session_state["data_errors"]["expirations"]["yahoo"] = None
         return vals
     except Exception as e:
-        # st.session_state["data_errors"]["expirations"]["yahoo"] = str(e)
         return []
 
 
@@ -182,34 +209,42 @@ def fetch_expirations(symbol: str) -> list:
 def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
     """Return a unified calls+puts DataFrame with a 'type' column ("call"/"put")."""
     try:
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+            try:
+                df = PROVIDER_INSTANCE.chain_snapshot_df(symbol, expiration)
+                # For put scanner, we might only get puts - need to fetch both for strategy lab
+                # Try to get full chain if the provider supports it
+                if "type" in df.columns:
+                    df = df.copy()
+                    df["type"] = df["type"].astype(str).str.lower()
+                return df
+            except Exception as e:
+                st.warning(f"Provider {PROVIDER} failed for {symbol} chain: {e}")
+                # Fall through to legacy methods
+        
+        # Legacy: Try provider override
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
-            # st.session_state["last_attempt"]["chain"] = "polygon"
-            # st.session_state["data_errors"]["chain"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
             return pd.DataFrame()
         if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["chain"] = "polygon"
             try:
                 df = POLY.chain_snapshot_df(symbol, expiration)
                 # Ensure 'type' is lower-case if present
                 if "type" in df.columns:
                     df = df.copy()
                     df["type"] = df["type"].astype(str).str.lower()
-                # _record_data_source("chain", "polygon")
-                # st.session_state["data_errors"]["chain"]["polygon"] = None
                 return df
             except Exception as e:
-                # st.session_state["data_errors"]["chain"]["polygon"] = str(e)
                 if ov == "polygon":
                     return pd.DataFrame()
                 # else fall through
     except Exception as e:
-        # st.session_state["data_errors"]["chain"]["polygon"] = str(e)
         pass
+    
     # yfinance fallback
     t = yf.Ticker(symbol)
     try:
-        # st.session_state["last_attempt"]["chain"] = "yahoo"
         ch = t.option_chain(expiration)
     except Exception:
         return pd.DataFrame()
@@ -229,6 +264,19 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
 
 def fetch_price_uncached(symbol: str) -> float:
     try:
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+            st.session_state["last_attempt"]["price"] = PROVIDER
+            try:
+                val = float(PROVIDER_INSTANCE.last_price(symbol))
+                _record_data_source("price", PROVIDER)
+                st.session_state["data_errors"]["price"][PROVIDER] = None
+                return val
+            except Exception as e:
+                st.session_state["data_errors"]["price"][PROVIDER] = str(e)
+                # Fall through to legacy
+        
+        # Legacy: Try provider override
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
             st.session_state["last_attempt"]["price"] = "polygon"
@@ -249,6 +297,8 @@ def fetch_price_uncached(symbol: str) -> float:
                 # else fall through
     except Exception as e:
         st.session_state["data_errors"]["price"]["polygon"] = str(e)
+    
+    # Fallback to yfinance
     try:
         st.session_state["last_attempt"]["price"] = "yahoo"
         t = yf.Ticker(symbol)
@@ -263,6 +313,19 @@ def fetch_price_uncached(symbol: str) -> float:
 
 def fetch_expirations_uncached(symbol: str) -> list:
     try:
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+            st.session_state["last_attempt"]["expirations"] = PROVIDER
+            try:
+                exps = PROVIDER_INSTANCE.expirations(symbol)
+                _record_data_source("expirations", PROVIDER)
+                st.session_state["data_errors"]["expirations"][PROVIDER] = None
+                return list(exps or [])
+            except Exception as e:
+                st.session_state["data_errors"]["expirations"][PROVIDER] = str(e)
+                # Fall through to legacy
+        
+        # Legacy: Try provider override
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
             st.session_state["last_attempt"]["expirations"] = "polygon"
@@ -284,6 +347,8 @@ def fetch_expirations_uncached(symbol: str) -> list:
                 # else fall through
     except Exception as e:
         st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
+    
+    # Fallback to yfinance
     try:
         st.session_state["last_attempt"]["expirations"] = "yahoo"
         vals = list(yf.Ticker(symbol).options or [])
@@ -297,6 +362,22 @@ def fetch_expirations_uncached(symbol: str) -> list:
 
 def fetch_chain_uncached(symbol: str, expiration: str) -> pd.DataFrame:
     try:
+        # Use new provider system if available
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+            st.session_state["last_attempt"]["chain"] = PROVIDER
+            try:
+                df = PROVIDER_INSTANCE.chain_snapshot_df(symbol, expiration)
+                if "type" in df.columns:
+                    df = df.copy()
+                    df["type"] = df["type"].astype(str).str.lower()
+                _record_data_source("chain", PROVIDER)
+                st.session_state["data_errors"]["chain"][PROVIDER] = None
+                return df
+            except Exception as e:
+                st.session_state["data_errors"]["chain"][PROVIDER] = str(e)
+                # Fall through to legacy
+        
+        # Legacy: Try provider override
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
             st.session_state["last_attempt"]["chain"] = "polygon"
