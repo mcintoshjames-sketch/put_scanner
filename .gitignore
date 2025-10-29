@@ -32,3 +32,4 @@ secrets*.json
 # Schwab API tokens (IMPORTANT: Never commit tokens!)
 schwab_token.json
 *_token.json
+trade_orders/
