@@ -8,7 +8,8 @@ import numpy as np
 from datetime import datetime, timedelta
 
 import pandas as pd
-import yfinance as yf
+# Import provider factory
+from providers import get_provider
 
 
 def _safe_float(x, default=float("nan")):
@@ -41,47 +42,6 @@ def _norm_cdf(x):
         return float("nan")
 
 
-def get_earnings_date(stock: yf.Ticker):
-    # Try multiple ways; yfinance calendar can be quirky
-    try:
-        cal = stock.calendar
-        if cal is not None and not cal.empty:
-            if "Earnings Date" in cal.index:
-                ed = cal.loc["Earnings Date"]
-                # sometimes a Series of two dates (range)
-                if hasattr(ed, "__iter__"):
-                    try:
-                        return pd.to_datetime(ed[0]).date()
-                    except Exception:
-                        return pd.to_datetime(ed).date()
-            # sometimes calendar has a column
-            if "Earnings Date" in cal.columns:
-                ed = cal["Earnings Date"].iloc[0]
-                # could be tuple-like
-                if hasattr(ed, "__iter__"):
-                    return pd.to_datetime(ed[0]).date()
-                return pd.to_datetime(ed).date()
-    except Exception:
-        pass
-    return None
-
-
-def get_technicals(stock: yf.Ticker):
-    # 200-DMA and 52-week low/high from last 1y of history
-    try:
-        hist = stock.history(period="1y", auto_adjust=False)
-        if hist.empty:
-            return float("nan"), float("nan"), float("nan")
-        close = hist["Close"]
-        sma200 = float(close.rolling(200).mean(
-        ).iloc[-1]) if len(close) >= 200 else float("nan")
-        year_low = float(close.min())
-        year_high = float(close.max())
-        return sma200, year_low, year_high
-    except Exception:
-        return float("nan"), float("nan"), float("nan")
-
-
 def analyze_puts(
     ticker,
     days_limit=45,
@@ -96,28 +56,32 @@ def analyze_puts(
     # e.g., 20000 means skip collateral > $20k per contract
     per_contract_collateral_cap=None,
     risk_free_rate=0.00,   # BS r (annualized). For short horizons, 0 is fine.
+    provider=None,         # Allow passing a provider instance
 ):
-    stock = yf.Ticker(ticker)
-
+    # Get provider if not passed
+    if provider is None:
+        provider = get_provider()
+    
     # Current price
     try:
-        price = float(stock.history(period="1d")["Close"].iloc[-1])
+        price = provider.last_price(ticker)
     except Exception:
         return pd.DataFrame()
 
-    expirations = []
+    # Get expirations
     try:
-        expirations = list(stock.options or [])
+        expirations = provider.expirations(ticker)
     except Exception:
-        pass
+        return pd.DataFrame()
+    
     if not expirations:
         return pd.DataFrame()
 
     # Technicals for "ownability" checks
-    sma200, yr_low, yr_high = get_technicals(stock)
+    sma200, yr_low, yr_high = provider.get_technicals(ticker)
 
     # Earnings date guard
-    earn_date = get_earnings_date(stock)
+    earn_date = provider.get_earnings_date(ticker)
 
     rows = []
 
@@ -147,7 +111,7 @@ def analyze_puts(
             continue
 
         try:
-            opt = stock.option_chain(exp).puts
+            opt = provider.chain_snapshot_df(ticker, exp)
         except Exception:
             continue
 

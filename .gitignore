@@ -28,3 +28,7 @@ secrets*.json
 
 # Streamlit secrets (IMPORTANT: Never commit secrets!)
 .streamlit/secrets.toml
+
+# Schwab API tokens (IMPORTANT: Never commit tokens!)
+schwab_token.json
+*_token.json
