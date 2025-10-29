@@ -114,10 +114,16 @@ def _init_data_calls():
 
 def _record_data_source(name: str, provider: str) -> None:
     try:
+        # Ensure data_calls is initialized
+        if "data_calls" not in st.session_state:
+            _init_data_calls()
         st.session_state["data_calls"][name][provider] += 1
         st.session_state["last_provider"][name] = provider
-    except Exception:
-        pass
+    except Exception as e:
+        # Debug: print error to help diagnose issues
+        import traceback
+        print(f"Error recording data source: {e}")
+        traceback.print_exc()
 
 
 def _provider_override() -> str:
@@ -2105,6 +2111,9 @@ st.title("📊 Options Income Strategy Lab — CSP vs Covered Call vs Collar")
 for key in ["df_csp", "df_cc", "df_collar"]:
     if key not in st.session_state:
         st.session_state[key] = pd.DataFrame()
+
+# Initialize diagnostics tracking
+_init_data_calls()
 
 with st.sidebar:
     st.header("Universe & Filters")

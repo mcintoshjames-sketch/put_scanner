@@ -2,7 +2,7 @@
 import os
 
 # Provider selection: "yfinance", "polygon", or "schwab"
-PROVIDER = os.environ.get("OPTIONS_PROVIDER", "yfinance").lower()
+PROVIDER = os.environ.get("OPTIONS_PROVIDER", "schwab").lower()
 
 # Provider-specific settings
 POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY")
