@@ -2802,6 +2802,155 @@ with tabs[0]:
         # Add earnings legend
         st.caption(
             "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown)")
+        
+        # Trading Panel (Dry-Run Mode)
+        st.divider()
+        with st.expander("🔧 Trade Execution (Test Mode)", expanded=False):
+            st.info("📋 **Test Mode Enabled**: Orders will be exported to JSON files for review, not sent to Schwab API")
+            
+            # Select a contract from the results
+            if not df_csp.empty:
+                col1, col2 = st.columns([3, 1])
+                
+                with col1:
+                    # Create selection options from scan results
+                    df_csp_display = df_csp.copy()
+                    df_csp_display['display'] = (
+                        df_csp_display['Ticker'] + " " +
+                        df_csp_display['Exp'] + " $" +
+                        df_csp_display['Strike'].astype(str) + " PUT @ $" +
+                        df_csp_display['Premium'].round(2).astype(str)
+                    )
+                    
+                    selected_idx = st.selectbox(
+                        "Select contract to trade:",
+                        options=range(len(df_csp_display)),
+                        format_func=lambda i: df_csp_display.iloc[i]['display']
+                    )
+                    
+                    if selected_idx is not None:
+                        selected = df_csp[df_csp.index == df_csp_display.index[selected_idx]].iloc[0]
+                        
+                        # Display selected contract details
+                        st.write("**Selected Contract:**")
+                        cols_info = st.columns(4)
+                        cols_info[0].metric("Ticker", selected['Ticker'])
+                        cols_info[1].metric("Strike", f"${selected['Strike']:.2f}")
+                        cols_info[2].metric("Premium", f"${selected['Premium']:.2f}")
+                        cols_info[3].metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                
+                with col2:
+                    st.write("**Order Settings:**")
+                    num_contracts = st.number_input(
+                        "Contracts",
+                        min_value=1,
+                        max_value=100,
+                        value=1,
+                        step=1,
+                        help="Number of contracts to trade"
+                    )
+                    
+                    order_duration = st.selectbox(
+                        "Duration",
+                        options=["DAY", "GTC"],
+                        index=0,
+                        help="DAY = good for today, GTC = good till canceled"
+                    )
+                    
+                    # Use mid price as default limit
+                    limit_price = st.number_input(
+                        "Limit Price",
+                        min_value=0.01,
+                        value=float(selected['Premium']),
+                        step=0.01,
+                        format="%.2f",
+                        help="Maximum price you're willing to receive"
+                    )
+                
+                # Order preview
+                st.divider()
+                st.write("**Order Preview:**")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.write(f"**Action:** SELL TO OPEN (Cash-Secured Put)")
+                col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
+                col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
+                
+                # Generate order button
+                if st.button("📥 Generate Order File", type="primary", use_container_width=True):
+                    try:
+                        from providers.schwab_trading import SchwabTrader, format_order_summary
+                        
+                        # Initialize trader in dry-run mode
+                        trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
+                        
+                        # Create order
+                        order = trader.create_cash_secured_put_order(
+                            symbol=selected['Ticker'],
+                            expiration=selected['Exp'],
+                            strike=float(selected['Strike']),
+                            quantity=int(num_contracts),
+                            limit_price=float(limit_price),
+                            duration=order_duration
+                        )
+                        
+                        # Validate order
+                        validation = trader.validate_order(order)
+                        
+                        if not validation['valid']:
+                            st.error("❌ Order validation failed:")
+                            for error in validation['errors']:
+                                st.error(f"  • {error}")
+                        else:
+                            # Show warnings if any
+                            if validation['warnings']:
+                                for warning in validation['warnings']:
+                                    st.warning(f"⚠️ {warning}")
+                            
+                            # Submit order (exports to file)
+                            metadata = {
+                                "scanner_data": {
+                                    "otm_percent": float(selected.get('OTM%', 0)),
+                                    "roi_annual": float(selected.get('ROI%_ann', 0)),
+                                    "iv": float(selected.get('IV', 0)),
+                                    "delta": float(selected.get('Δ', 0)),
+                                    "theta": float(selected.get('Θ', 0)),
+                                    "open_interest": int(selected.get('OI', 0)),
+                                    "days_to_exp": int(selected.get('Days', 0))
+                                },
+                                "source": "strategy_lab_csp_scanner"
+                            }
+                            
+                            result = trader.submit_order(order, strategy_type="csp", metadata=metadata)
+                            
+                            if result['status'] == 'exported':
+                                st.success(f"✅ Order exported successfully!")
+                                st.code(result['filepath'], language=None)
+                                
+                                # Show order summary
+                                with st.expander("📄 Order Details"):
+                                    st.text(format_order_summary(order))
+                                    st.json(order)
+                                
+                                # Provide download button
+                                with open(result['filepath'], 'r') as f:
+                                    order_json = f.read()
+                                
+                                st.download_button(
+                                    label="⬇️ Download Order File",
+                                    data=order_json,
+                                    file_name=result['filepath'].split('/')[-1],
+                                    mime="application/json"
+                                )
+                            else:
+                                st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
+                    
+                    except Exception as e:
+                        st.error(f"❌ Error generating order: {str(e)}")
+                        import traceback
+                        with st.expander("Error Details"):
+                            st.code(traceback.format_exc())
+            else:
+                st.info("No contracts available. Run a CSP scan first.")
 
 # --- Tab 2: CC ---
 with tabs[1]:
