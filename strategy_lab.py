@@ -2100,6 +2100,34 @@ for key in ["df_csp", "df_cc", "df_collar"]:
 
 with st.sidebar:
     st.header("Universe & Filters")
+    
+    # Data Provider Selection
+    with st.expander("📡 Data Provider", expanded=False):
+        provider_options = ["yfinance", "schwab", "polygon"]
+        current_provider = PROVIDER if PROVIDER_SYSTEM_AVAILABLE else "yfinance"
+        
+        selected_provider = st.selectbox(
+            "Select Data Provider",
+            options=provider_options,
+            index=provider_options.index(current_provider) if current_provider in provider_options else 0,
+            help="YFinance: Free, 15-min delay | Schwab: Real-time (requires auth) | Polygon: Premium data"
+        )
+        
+        # Update provider if changed
+        if selected_provider != current_provider:
+            import os
+            os.environ["OPTIONS_PROVIDER"] = selected_provider
+            st.info(f"Provider changed to {selected_provider}. Restart app to apply changes.")
+        
+        # Show provider status
+        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+            st.success(f"✓ Active: {selected_provider.upper()}")
+        else:
+            st.warning(f"⚠ Using fallback: YFinance")
+            if selected_provider == "schwab":
+                st.caption("Configure Schwab credentials in environment or secrets")
+            elif selected_provider == "polygon":
+                st.caption("Set POLYGON_API_KEY in environment")
 
     # Pre-screener section
     with st.expander("🎯 Pre-Screen Tickers", expanded=False):
