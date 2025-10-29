@@ -33,3 +33,7 @@ secrets*.json
 schwab_token.json
 *_token.json
 trade_orders/
+
+# Debug files that may contain credentials
+debug*.py
+test_schwab*.py
