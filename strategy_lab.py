@@ -2935,80 +2935,174 @@ with tabs[0]:
                 col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
                 col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
                 
-                # Generate order button
-                if st.button("📥 Generate Order File", type="primary", use_container_width=True):
-                    try:
-                        from providers.schwab_trading import SchwabTrader, format_order_summary
-                        
-                        # Initialize trader in dry-run mode
-                        trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
-                        
-                        # Create order
-                        order = trader.create_cash_secured_put_order(
-                            symbol=selected['Ticker'],
-                            expiration=selected['Exp'],
-                            strike=float(selected['Strike']),
-                            quantity=int(num_contracts),
-                            limit_price=float(limit_price),
-                            duration=order_duration
-                        )
-                        
-                        # Validate order
-                        validation = trader.validate_order(order)
-                        
-                        if not validation['valid']:
-                            st.error("❌ Order validation failed:")
-                            for error in validation['errors']:
-                                st.error(f"  • {error}")
-                        else:
-                            # Show warnings if any
-                            if validation['warnings']:
-                                for warning in validation['warnings']:
-                                    st.warning(f"⚠️ {warning}")
+                # Preview with Schwab API button
+                st.divider()
+                col_preview, col_export = st.columns(2)
+                
+                with col_preview:
+                    if st.button("🔍 Preview Order with Schwab API", use_container_width=True):
+                        try:
+                            from providers.schwab_trading import SchwabTrader
+                            from providers.schwab import SchwabClient
                             
-                            # Submit order (exports to file)
-                            metadata = {
-                                "scanner_data": {
-                                    "otm_percent": float(selected.get('OTM%', 0)),
-                                    "roi_annual": float(selected.get('ROI%_ann', 0)),
-                                    "iv": float(selected.get('IV', 0)),
-                                    "delta": float(selected.get('Δ', 0)),
-                                    "theta": float(selected.get('Θ', 0)),
-                                    "open_interest": int(selected.get('OI', 0)),
-                                    "days_to_exp": int(selected.get('Days', 0))
-                                },
-                                "source": "strategy_lab_csp_scanner"
-                            }
-                            
-                            result = trader.submit_order(order, strategy_type="csp", metadata=metadata)
-                            
-                            if result['status'] == 'exported':
-                                st.success(f"✅ Order exported successfully!")
-                                st.code(result['filepath'], language=None)
-                                
-                                # Show order summary
-                                with st.expander("📄 Order Details"):
-                                    st.text(format_order_summary(order))
-                                    st.json(order)
-                                
-                                # Provide download button
-                                with open(result['filepath'], 'r') as f:
-                                    order_json = f.read()
-                                
-                                st.download_button(
-                                    label="⬇️ Download Order File",
-                                    data=order_json,
-                                    file_name=result['filepath'].split('/')[-1],
-                                    mime="application/json"
-                                )
+                            # Check if Schwab provider is active
+                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                # Get the underlying schwab client
+                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                if schwab_client:
+                                    # Initialize trader (NOT dry-run, we want to call API)
+                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                    
+                                    # Create order
+                                    order = trader.create_cash_secured_put_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['Strike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    
+                                    # Validate order first
+                                    validation = trader.validate_order(order)
+                                    
+                                    if not validation['valid']:
+                                        st.error("❌ Order validation failed:")
+                                        for error in validation['errors']:
+                                            st.error(f"  • {error}")
+                                    else:
+                                        # Call preview API
+                                        with st.spinner("Calling Schwab API..."):
+                                            preview_result = trader.preview_order(order)
+                                        
+                                        if preview_result['status'] == 'preview_success':
+                                            st.success("✅ Order preview received from Schwab!")
+                                            
+                                            # Display preview details
+                                            with st.expander("📊 Schwab Preview Response", expanded=True):
+                                                preview_data = preview_result['preview']
+                                                
+                                                # Display key metrics if available
+                                                if isinstance(preview_data, dict):
+                                                    st.write("**Order Details:**")
+                                                    
+                                                    # Commission
+                                                    if 'commission' in preview_data:
+                                                        st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                                    
+                                                    # Total cost/credit
+                                                    if 'estimatedTotalAmount' in preview_data:
+                                                        st.metric("Estimated Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                                    
+                                                    # Buying power effect
+                                                    if 'buyingPowerEffect' in preview_data:
+                                                        st.metric("Buying Power Impact", f"${preview_data['buyingPowerEffect']:.2f}")
+                                                    
+                                                    # Margin requirement
+                                                    if 'marginRequirement' in preview_data:
+                                                        st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
+                                                    
+                                                    # Warnings
+                                                    if 'warnings' in preview_data and preview_data['warnings']:
+                                                        st.warning("⚠️ **Warnings:**")
+                                                        for warning in preview_data['warnings']:
+                                                            st.write(f"• {warning}")
+                                                    
+                                                    # Full response
+                                                    st.write("**Full Response:**")
+                                                    st.json(preview_data)
+                                                else:
+                                                    st.json(preview_data)
+                                            
+                                            st.caption(f"📁 Preview saved to: {preview_result['filepath']}")
+                                        else:
+                                            st.error(f"❌ Preview failed: {preview_result.get('message', 'Unknown error')}")
+                                else:
+                                    st.error("❌ Schwab client not available. Check provider initialization.")
                             else:
-                                st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
-                    
-                    except Exception as e:
-                        st.error(f"❌ Error generating order: {str(e)}")
-                        import traceback
-                        with st.expander("Error Details"):
-                            st.code(traceback.format_exc())
+                                st.error("❌ Schwab provider not active. Set OPTIONS_PROVIDER=schwab and configure credentials.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Error previewing order: {str(e)}")
+                            import traceback
+                            with st.expander("Error Details"):
+                                st.code(traceback.format_exc())
+                
+                # Generate order button (dry-run export)
+                with col_export:
+                    if st.button("📥 Generate Order File", type="primary", use_container_width=True):
+                        try:
+                            from providers.schwab_trading import SchwabTrader, format_order_summary
+                            
+                            # Initialize trader in dry-run mode
+                            trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
+                            
+                            # Create order
+                            order = trader.create_cash_secured_put_order(
+                                symbol=selected['Ticker'],
+                                expiration=selected['Exp'],
+                                strike=float(selected['Strike']),
+                                quantity=int(num_contracts),
+                                limit_price=float(limit_price),
+                                duration=order_duration
+                            )
+                            
+                            # Validate order
+                            validation = trader.validate_order(order)
+                            
+                            if not validation['valid']:
+                                st.error("❌ Order validation failed:")
+                                for error in validation['errors']:
+                                    st.error(f"  • {error}")
+                            else:
+                                # Show warnings if any
+                                if validation['warnings']:
+                                    for warning in validation['warnings']:
+                                        st.warning(f"⚠️ {warning}")
+                                
+                                # Submit order (exports to file)
+                                metadata = {
+                                    "scanner_data": {
+                                        "otm_percent": float(selected.get('OTM%', 0)),
+                                        "roi_annual": float(selected.get('ROI%_ann', 0)),
+                                        "iv": float(selected.get('IV', 0)),
+                                        "delta": float(selected.get('Δ', 0)),
+                                        "theta": float(selected.get('Θ', 0)),
+                                        "open_interest": int(selected.get('OI', 0)),
+                                        "days_to_exp": int(selected.get('Days', 0))
+                                    },
+                                    "source": "strategy_lab_csp_scanner"
+                                }
+                                
+                                result = trader.submit_order(order, strategy_type="csp", metadata=metadata)
+                                
+                                if result['status'] == 'exported':
+                                    st.success(f"✅ Order exported successfully!")
+                                    st.code(result['filepath'], language=None)
+                                    
+                                    # Show order summary
+                                    with st.expander("📄 Order Details"):
+                                        st.text(format_order_summary(order))
+                                        st.json(order)
+                                    
+                                    # Provide download button
+                                    with open(result['filepath'], 'r') as f:
+                                        order_json = f.read()
+                                    
+                                    st.download_button(
+                                        label="⬇️ Download Order File",
+                                        data=order_json,
+                                        file_name=result['filepath'].split('/')[-1],
+                                        mime="application/json"
+                                    )
+                                else:
+                                    st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
+                        
+                        except Exception as e:
+                            st.error(f"❌ Error generating order: {str(e)}")
+                            import traceback
+                            with st.expander("Error Details"):
+                                st.code(traceback.format_exc())
             else:
                 st.info("No contracts available. Run a CSP scan first.")
 

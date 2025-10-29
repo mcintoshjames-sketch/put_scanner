@@ -84,6 +84,88 @@ class SchwabTrader:
         except Exception as e:
             raise RuntimeError(f"Failed to retrieve account numbers: {e}")
     
+    def preview_order(
+        self,
+        order: Dict[str, Any],
+        account_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Preview an order with Schwab API before placing it.
+        
+        This calls the previewOrder endpoint to show what would happen
+        if the order were placed, including:
+        - Commission and fees
+        - Estimated order value
+        - Buying power effect
+        - Margin requirements
+        - Warning messages
+        
+        Args:
+            order: Order payload dictionary
+            account_id: Account hash value (uses self.account_id if not provided)
+        
+        Returns:
+            Preview response from Schwab API
+            
+        Raises:
+            RuntimeError: If client not available or preview fails
+        """
+        if not self.client:
+            raise RuntimeError(
+                "Schwab API client required. Initialize SchwabTrader with a client instance."
+            )
+        
+        acct_id = account_id or self.account_id
+        if not acct_id:
+            raise RuntimeError(
+                "Account ID required. Set SCHWAB_ACCOUNT_ID or pass account_id parameter."
+            )
+        
+        try:
+            # Call Schwab API preview endpoint
+            # The client passed in is SchwabClient, which wraps schwab.client.Client
+            # Access the underlying schwab client
+            schwab_client = self.client.client if hasattr(self.client, 'client') else self.client
+            response = schwab_client.preview_order(acct_id, order)
+            
+            # Parse response
+            preview_data = response.json() if hasattr(response, 'json') else response
+            
+            # Save preview to file for reference
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"order_preview_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "account_id": acct_id,
+                    "order": order,
+                    "preview": preview_data
+                }, f, indent=2)
+            
+            return {
+                "status": "preview_success",
+                "preview": preview_data,
+                "filepath": str(filepath),
+                "message": f"Order preview saved to {filepath}"
+            }
+        
+        except Exception as e:
+            # Save error details
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"order_preview_error_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "account_id": acct_id,
+                    "order": order,
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                }, f, indent=2)
+            
+            raise RuntimeError(f"Failed to preview order: {e}")
+    
     def create_option_order(
         self,
         symbol: str,
