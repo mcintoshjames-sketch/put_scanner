@@ -18,6 +18,7 @@
 import math
 from datetime import datetime, timedelta, timezone
 import os
+import threading
 
 # Import provider system
 try:
@@ -45,6 +46,19 @@ import numpy as np
 import altair as alt
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Thread-safe diagnostics counters (accessible from worker threads)
+_diagnostics_lock = threading.Lock()
+_diagnostics_counters = {
+    "price": {"yfinance": 0, "schwab": 0, "polygon": 0},
+    "expirations": {"yfinance": 0, "schwab": 0, "polygon": 0},
+    "chain": {"yfinance": 0, "schwab": 0, "polygon": 0},
+}
+_last_provider_used = {
+    "price": None,
+    "expirations": None,
+    "chain": None
+}
 
 
 # ----------------------------- Utils -----------------------------
@@ -90,16 +104,26 @@ except Exception:  # pragma: no cover - optional
 
 
 def _init_data_calls():
-    if "data_calls" not in st.session_state:
-        st.session_state["data_calls"] = {
-            "price": {"yfinance": 0, "schwab": 0, "polygon": 0},
-            "expirations": {"yfinance": 0, "schwab": 0, "polygon": 0},
-            "chain": {"yfinance": 0, "schwab": 0, "polygon": 0},
-        }
-    if "last_provider" not in st.session_state:
-        st.session_state["last_provider"] = {
-            "price": None, "expirations": None, "chain": None
-        }
+    """Initialize session state from thread-safe counters."""
+    # Sync thread-safe counters to session state for display
+    with _diagnostics_lock:
+        if "data_calls" not in st.session_state:
+            st.session_state["data_calls"] = {
+                "price": dict(_diagnostics_counters["price"]),
+                "expirations": dict(_diagnostics_counters["expirations"]),
+                "chain": dict(_diagnostics_counters["chain"]),
+            }
+        else:
+            # Update session state with current thread-safe counter values
+            for call_type in ["price", "expirations", "chain"]:
+                for provider in ["yfinance", "schwab", "polygon"]:
+                    st.session_state["data_calls"][call_type][provider] = _diagnostics_counters[call_type][provider]
+        
+        if "last_provider" not in st.session_state:
+            st.session_state["last_provider"] = dict(_last_provider_used)
+        else:
+            st.session_state["last_provider"].update(_last_provider_used)
+    
     if "last_attempt" not in st.session_state:
         st.session_state["last_attempt"] = {
             "price": None, "expirations": None, "chain": None
@@ -113,17 +137,14 @@ def _init_data_calls():
 
 
 def _record_data_source(name: str, provider: str) -> None:
+    """Thread-safe recording of data source usage."""
     try:
-        # Ensure data_calls is initialized
-        if "data_calls" not in st.session_state:
-            _init_data_calls()
-        st.session_state["data_calls"][name][provider] += 1
-        st.session_state["last_provider"][name] = provider
+        with _diagnostics_lock:
+            _diagnostics_counters[name][provider] += 1
+            _last_provider_used[name] = provider
     except Exception as e:
         # Debug: print error to help diagnose issues
-        import traceback
-        print(f"Error recording data source: {e}")
-        traceback.print_exc()
+        print(f"Error recording data source {name}/{provider}: {e}")
 
 
 def _provider_override() -> str:
