@@ -186,165 +186,165 @@ else:
         )
 
     # ===================== MONTE CARLO SECTION =====================
-# ===================== MONTE CARLO SECTION =====================
-if do_mc and not dff.empty:
-    st.subheader("Monte Carlo Risk (per selected contract)")
+    # ===================== MONTE CARLO SECTION =====================
+    if do_mc and not dff.empty:
+        st.subheader("Monte Carlo Risk (per selected contract)")
 
-    # Build selection dataset and key
-    pick_df = dff.copy()
-    key_col = "__KEY__"
-    pick_df[key_col] = (
-        pick_df["Ticker"].astype(str) + " | "
-        + pick_df["Exp"].astype(str) + " | K="
-        + pick_df["Strike"].astype(str) + " | Prem="
-        + pick_df["Premium"].astype(str) + " | ROI%="
-        + pick_df["ROI%_ann"].astype(str)
-    )
-
-    # Optional pre-selection filters
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        tick_filter = st.multiselect("Filter by ticker", sorted(
-            pick_df["Ticker"].unique().tolist()))
-    with f2:
-        exp_filter = st.multiselect(
-            "Filter by expiry", sorted(pick_df["Exp"].unique().tolist()))
-    with f3:
-        min_roi_pick = st.slider(
-            "Min ROI%_ann (picker)", 0.0, 100.0, 0.0, step=0.5)
-
-    if tick_filter:
-        pick_df = pick_df[pick_df["Ticker"].isin(tick_filter)]
-    if exp_filter:
-        pick_df = pick_df[pick_df["Exp"].isin(exp_filter)]
-    if "ROI%_ann" in pick_df:
-        pick_df = pick_df[pick_df["ROI%_ann"] >= min_roi_pick]
-
-    if pick_df.empty:
-        st.info("No rows available for MC after picker filters — loosen filters.")
-    else:
-        choice = st.selectbox("Choose a contract",
-                              options=pick_df[key_col].tolist(), index=0)
-        sel_row = pick_df[pick_df[key_col] == choice].iloc[0]
-
-        # ---- Run MC on the selected row ----
-        mc = mc_short_put_loss_prob(
-            sel_row,
-            loss_frac=loss_frac,
-            n_paths=int(paths),
-            mu=float(mc_drift),
-            seed=use_seed
+        # Build selection dataset and key
+        pick_df = dff.copy()
+        key_col = "__KEY__"
+        pick_df[key_col] = (
+            pick_df["Ticker"].astype(str) + " | "
+            + pick_df["Exp"].astype(str) + " | K="
+            + pick_df["Strike"].astype(str) + " | Prem="
+            + pick_df["Premium"].astype(str) + " | ROI%="
+            + pick_df["ROI%_ann"].astype(str)
         )
 
-        # Summary metrics
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Prob(loss > threshold)", f"{mc['prob_loss_over']*100:.2f}%")
-        c2.metric("Expected P&L / contract", f"${mc['expected_pnl']:,.0f}")
-        c3.metric("P&L (5% / 50% / 95%)",
-                  f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
-        c4.metric("Worst MC path", f"${mc['pnl_min']:,.0f}")
+        # Optional pre-selection filters
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            tick_filter = st.multiselect("Filter by ticker", sorted(
+                pick_df["Ticker"].unique().tolist()))
+        with f2:
+            exp_filter = st.multiselect(
+                "Filter by expiry", sorted(pick_df["Exp"].unique().tolist()))
+        with f3:
+            min_roi_pick = st.slider(
+                "Min ROI%_ann (picker)", 0.0, 100.0, 0.0, step=0.5)
 
-        st.caption(
-            f"Selected: {sel_row['Ticker']} {sel_row['Exp']} K={sel_row['Strike']} • "
-            f"Collateral=${mc['collateral']:,.0f} • "
-            f"Loss threshold={loss_frac:.0%} → ${mc['loss_threshold']:,.0f} • "
-            f"Days={mc['days']} • IV used={mc['iv_used']*100:.2f}% • Paths={mc['paths']:,}"
-        )
+        if tick_filter:
+            pick_df = pick_df[pick_df["Ticker"].isin(tick_filter)]
+        if exp_filter:
+            pick_df = pick_df[pick_df["Exp"].isin(exp_filter)]
+        if "ROI%_ann" in pick_df:
+            pick_df = pick_df[pick_df["ROI%_ann"] >= min_roi_pick]
 
-        # Histogram
-        pnl = mc["pnl_paths"]
-        bins = np.histogram_bin_edges(pnl, bins="auto")
-        hist, edges = np.histogram(pnl, bins=bins)
-        chart_df = pd.DataFrame(
-            {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
+        if pick_df.empty:
+            st.info("No rows available for MC after picker filters — loosen filters.")
+        else:
+            choice = st.selectbox("Choose a contract",
+                                  options=pick_df[key_col].tolist(), index=0)
+            sel_row = pick_df[pick_df[key_col] == choice].iloc[0]
 
-        base = alt.Chart(chart_df).mark_bar().encode(
-            x=alt.X("pnl:Q", title="P&L per contract (USD)"),
-            y=alt.Y("count:Q", title="Frequency"),
-            tooltip=["pnl", "count"]
-        )
-        rule_df = pd.DataFrame({"x": [mc["loss_threshold"]]})
-        rule = alt.Chart(rule_df).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
-        st.altair_chart(base + rule, use_container_width=True)
+            # ---- Run MC on the selected row ----
+            mc = mc_short_put_loss_prob(
+                sel_row,
+                loss_frac=loss_frac,
+                n_paths=int(paths),
+                mu=float(mc_drift),
+                seed=use_seed
+            )
 
-        # ===================== AT-A-GLANCE SUMMARY =====================
-        st.subheader("At-a-Glance: Trade Summary & Risk")
+            # Summary metrics
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Prob(loss > threshold)", f"{mc['prob_loss_over']*100:.2f}%")
+            c2.metric("Expected P&L / contract", f"${mc['expected_pnl']:,.0f}")
+            c3.metric("P&L (5% / 50% / 95%)",
+                      f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
+            c4.metric("Worst MC path", f"${mc['pnl_min']:,.0f}")
 
-        def pct(x):
-            return f"{x*100:.2f}%"
+            st.caption(
+                f"Selected: {sel_row['Ticker']} {sel_row['Exp']} K={sel_row['Strike']} • "
+                f"Collateral=${mc['collateral']:,.0f} • "
+                f"Loss threshold={loss_frac:.0%} → ${mc['loss_threshold']:,.0f} • "
+                f"Days={mc['days']} • IV used={mc['iv_used']*100:.2f}% • Paths={mc['paths']:,}"
+            )
 
-        def ann_from_pnl(pnl, collateral, days):
-            if collateral <= 0 or days <= 0:
-                return float("nan")
-            r = pnl / collateral
-            try:
-                return (1.0 + r) ** (365.0 / days) - 1.0
-            except Exception:
-                return float("nan")
+            # Histogram
+            pnl = mc["pnl_paths"]
+            bins = np.histogram_bin_edges(pnl, bins="auto")
+            hist, edges = np.histogram(pnl, bins=bins)
+            chart_df = pd.DataFrame(
+                {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
 
-        collateral = mc["collateral"]
-        days = mc["days"]
-        price0 = mc["price0"]
-        strike = mc["strike"]
-        premium = mc["premium"]
-        loss_threshold = mc["loss_threshold"]
-        prob_tail = mc["prob_loss_over"]
-        iv_used = mc["iv_used"]
-        p5, p50, p95 = mc["pnl_p5"], mc["pnl_p50"], mc["pnl_p95"]
-        exp_pnl = mc["expected_pnl"]
-        worst = mc["pnl_min"]
+            base = alt.Chart(chart_df).mark_bar().encode(
+                x=alt.X("pnl:Q", title="P&L per contract (USD)"),
+                y=alt.Y("count:Q", title="Frequency"),
+                tooltip=["pnl", "count"]
+            )
+            rule_df = pd.DataFrame({"x": [mc["loss_threshold"]]})
+            rule = alt.Chart(rule_df).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
+            st.altair_chart(base + rule, use_container_width=True)
 
-        cost_basis = strike - premium
-        breakeven = cost_basis
-        assign_prob = max(0.0, 1.0 - float(sel_row.get("POEW", 0.0)))
-        cushion_sigma = float(sel_row.get("CushionSigma", float("nan")))
-        otm_pct = float(sel_row.get("OTM%", float("nan")))
-        max_loss = -(strike - premium) * 100.0
+            # ===================== AT-A-GLANCE SUMMARY =====================
+            st.subheader("At-a-Glance: Trade Summary & Risk")
 
-        summary_rows = [
-            {"Scenario": "P5 (bear)",    "P&L ($/contract)": f"{p5:,.0f}",
-             "Return on Collateral": pct(p5 / collateral),
-             "Annualized ROI": pct(ann_from_pnl(p5, collateral, days))},
-            {"Scenario": "Median (P50)", "P&L ($/contract)": f"{p50:,.0f}",
-             "Return on Collateral": pct(p50 / collateral),
-             "Annualized ROI": pct(ann_from_pnl(p50, collateral, days))},
-            {"Scenario": "P95 (bull)",   "P&L ($/contract)": f"{p95:,.0f}",
-             "Return on Collateral": pct(p95 / collateral),
-             "Annualized ROI": pct(ann_from_pnl(p95, collateral, days))},
-            {"Scenario": "Expected",     "P&L ($/contract)": f"{exp_pnl:,.0f}",
-             "Return on Collateral": pct(exp_pnl / collateral),
-             "Annualized ROI": pct(ann_from_pnl(exp_pnl, collateral, days))},
-        ]
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+            def pct(x):
+                return f"{x*100:.2f}%"
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Assignment Probability (≈ 1 − POEW)", pct(assign_prob))
-        m2.metric("Tail Risk: Pr(P&L < threshold)", pct(prob_tail))
-        m3.metric("Loss threshold", f"${loss_threshold:,.0f}")
-        m4.metric("Worst MC path", f"${worst:,.0f}")
+            def ann_from_pnl(pnl, collateral, days):
+                if collateral <= 0 or days <= 0:
+                    return float("nan")
+                r = pnl / collateral
+                try:
+                    return (1.0 + r) ** (365.0 / days) - 1.0
+                except Exception:
+                    return float("nan")
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Underlying Price", f"${price0:,.2f}")
-        c2.metric("Strike / Premium", f"{strike:.2f} / {premium:.2f}")
-        c3.metric("Breakeven (per share)", f"${breakeven:,.2f}")
-        c4.metric("Max Loss (per contract)", f"${max_loss:,.0f}")
+            collateral = mc["collateral"]
+            days = mc["days"]
+            price0 = mc["price0"]
+            strike = mc["strike"]
+            premium = mc["premium"]
+            loss_threshold = mc["loss_threshold"]
+            prob_tail = mc["prob_loss_over"]
+            iv_used = mc["iv_used"]
+            p5, p50, p95 = mc["pnl_p5"], mc["pnl_p50"], mc["pnl_p95"]
+            exp_pnl = mc["expected_pnl"]
+            worst = mc["pnl_min"]
 
-        c5, c6, c7 = st.columns(3)
-        c5.metric("Days to Expiry", f"{days}d")
-        c6.metric("OTM distance", f"{otm_pct:.2f}%")
-        c7.metric("Cushion (σ to strike)", f"{cushion_sigma:.2f}σ")
+            cost_basis = strike - premium
+            breakeven = cost_basis
+            assign_prob = max(0.0, 1.0 - float(sel_row.get("POEW", 0.0)))
+            cushion_sigma = float(sel_row.get("CushionSigma", float("nan")))
+            otm_pct = float(sel_row.get("OTM%", float("nan")))
+            max_loss = -(strike - premium) * 100.0
 
-        st.caption(
-            f"IV used={iv_used*100:.2f}% • Collateral=${collateral:,.0f} • "
-            f"Cost basis (if assigned)=${cost_basis:,.2f} • "
-            "Annualize via (1 + Return)^(365/Days) - 1 on collateral."
-        )
+            summary_rows = [
+                {"Scenario": "P5 (bear)",    "P&L ($/contract)": f"{p5:,.0f}",
+                 "Return on Collateral": pct(p5 / collateral),
+                 "Annualized ROI": pct(ann_from_pnl(p5, collateral, days))},
+                {"Scenario": "Median (P50)", "P&L ($/contract)": f"{p50:,.0f}",
+                 "Return on Collateral": pct(p50 / collateral),
+                 "Annualized ROI": pct(ann_from_pnl(p50, collateral, days))},
+                {"Scenario": "P95 (bull)",   "P&L ($/contract)": f"{p95:,.0f}",
+                 "Return on Collateral": pct(p95 / collateral),
+                 "Annualized ROI": pct(ann_from_pnl(p95, collateral, days))},
+                {"Scenario": "Expected",     "P&L ($/contract)": f"{exp_pnl:,.0f}",
+                 "Return on Collateral": pct(exp_pnl / collateral),
+                 "Annualized ROI": pct(ann_from_pnl(exp_pnl, collateral, days))},
+            ]
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Assignment Probability (≈ 1 − POEW)", pct(assign_prob))
+            m2.metric("Tail Risk: Pr(P&L < threshold)", pct(prob_tail))
+            m3.metric("Loss threshold", f"${loss_threshold:,.0f}")
+            m4.metric("Worst MC path", f"${worst:,.0f}")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Underlying Price", f"${price0:,.2f}")
+            c2.metric("Strike / Premium", f"{strike:.2f} / {premium:.2f}")
+            c3.metric("Breakeven (per share)", f"${breakeven:,.2f}")
+            c4.metric("Max Loss (per contract)", f"${max_loss:,.0f}")
+
+            c5, c6, c7 = st.columns(3)
+            c5.metric("Days to Expiry", f"{days}d")
+            c6.metric("OTM distance", f"{otm_pct:.2f}%")
+            c7.metric("Cushion (σ to strike)", f"{cushion_sigma:.2f}σ")
+
+            st.caption(
+                f"IV used={iv_used*100:.2f}% • Collateral=${collateral:,.0f} • "
+                f"Cost basis (if assigned)=${cost_basis:,.2f} • "
+                "Annualize via (1 + Return)^(365/Days) - 1 on collateral."
+            )
 
     # Download
-csv = dff.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇️ Download CSV",
-    data=csv,
-    file_name=f"put_scanner_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-    mime="text/csv",
-)
+    csv = dff.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download CSV",
+        data=csv,
+        file_name=f"put_scanner_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+    )
