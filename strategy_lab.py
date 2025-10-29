@@ -2935,9 +2935,53 @@ with tabs[0]:
                 col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
                 col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
                 
-                # Preview with Schwab API button
+                # Buying Power Check button
                 st.divider()
-                col_preview, col_export = st.columns(2)
+                col_check, col_preview, col_export = st.columns(3)
+                
+                with col_check:
+                    if st.button("💰 Check Buying Power", use_container_width=True):
+                        try:
+                            from providers.schwab_trading import SchwabTrader
+                            from providers.schwab import SchwabClient
+                            
+                            # Check if Schwab provider is active
+                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                if schwab_client:
+                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                    
+                                    # Calculate required buying power
+                                    required = selected['Strike'] * 100 * num_contracts
+                                    
+                                    with st.spinner("Checking account..."):
+                                        result = trader.check_buying_power(required)
+                                    
+                                    if result['sufficient']:
+                                        st.success(f"✅ Sufficient buying power!")
+                                        st.metric("Available", f"${result['available']:,.2f}")
+                                        st.metric("Required", f"${result['required']:,.2f}")
+                                        st.metric("Remaining", f"${result['available'] - result['required']:,.2f}")
+                                    else:
+                                        st.error(f"❌ Insufficient buying power")
+                                        st.metric("Available", f"${result['available']:,.2f}")
+                                        st.metric("Required", f"${result['required']:,.2f}")
+                                        st.metric("Shortfall", f"${result['shortfall']:,.2f}")
+                                    
+                                    with st.expander("📊 Account Details"):
+                                        st.write(f"**Account Type:** {result['account_type']}")
+                                        st.write(f"**Option Buying Power:** ${result['option_buying_power']:,.2f}")
+                                        st.write(f"**Total Buying Power:** ${result['total_buying_power']:,.2f}")
+                                        st.write(f"**Cash Balance:** ${result['cash_balance']:,.2f}")
+                                else:
+                                    st.error("❌ Schwab client not available")
+                            else:
+                                st.error("❌ Schwab provider not active")
+                        except Exception as e:
+                            st.error(f"❌ Error checking buying power: {str(e)}")
+                            import traceback
+                            with st.expander("Error Details"):
+                                st.code(traceback.format_exc())
                 
                 with col_preview:
                     if st.button("🔍 Preview Order with Schwab API", use_container_width=True):

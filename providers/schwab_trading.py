@@ -84,6 +84,121 @@ class SchwabTrader:
         except Exception as e:
             raise RuntimeError(f"Failed to retrieve account numbers: {e}")
     
+    def get_account_info(self, account_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get detailed account information including balances and buying power.
+        
+        Args:
+            account_id: Account hash value (uses self.account_id if not provided)
+        
+        Returns:
+            Dictionary with account details including:
+            - cashBalance: Available cash
+            - buyingPower: Total buying power for trades
+            - optionBuyingPower: Buying power for options
+            - marginBalance: Margin information
+            - accountValue: Total account value
+            
+        Example response:
+            {
+                "securitiesAccount": {
+                    "type": "MARGIN",
+                    "accountNumber": "hash...",
+                    "currentBalances": {
+                        "cashBalance": 10000.00,
+                        "buyingPower": 40000.00,
+                        "optionBuyingPower": 10000.00
+                    },
+                    "initialBalances": {...},
+                    "projectedBalances": {...}
+                }
+            }
+        """
+        if not self.client:
+            raise RuntimeError(
+                "Schwab API client required. Initialize SchwabTrader with a client instance."
+            )
+        
+        acct_id = account_id or self.account_id
+        if not acct_id:
+            raise RuntimeError(
+                "Account ID required. Set SCHWAB_ACCOUNT_ID or pass account_id parameter."
+            )
+        
+        try:
+            # Call Schwab API to get account details
+            # fields parameter controls what data is returned
+            response = self.client.client.get_account(
+                acct_id, 
+                fields=self.client.client.Account.Fields.POSITIONS
+            )
+            
+            account_data = response.json() if hasattr(response, 'json') else response
+            
+            # Save to file for reference
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"account_info_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "account_id": acct_id,
+                    "account_data": account_data
+                }, f, indent=2)
+            
+            return account_data
+        
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve account info: {e}")
+    
+    def check_buying_power(
+        self,
+        required_amount: float,
+        account_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Check if account has sufficient buying power for a trade.
+        
+        Args:
+            required_amount: Amount of buying power needed (e.g., for cash-secured put)
+            account_id: Account hash value (uses self.account_id if not provided)
+        
+        Returns:
+            Dictionary with:
+            - sufficient: Boolean indicating if you have enough buying power
+            - available: Current buying power available
+            - required: Amount needed for trade
+            - shortfall: Amount short (if insufficient)
+            - option_buying_power: Buying power specifically for options
+        """
+        account_data = self.get_account_info(account_id)
+        
+        # Extract balance information
+        securities_account = account_data.get('securitiesAccount', {})
+        current_balances = securities_account.get('currentBalances', {})
+        
+        # Get relevant buying power metrics
+        buying_power = current_balances.get('buyingPower', 0.0)
+        option_buying_power = current_balances.get('optionBuyingPower', 0.0)
+        cash_balance = current_balances.get('cashBalance', 0.0)
+        
+        # For cash-secured puts, we need cash or margin
+        # Use option buying power as the key metric
+        available = option_buying_power
+        
+        result = {
+            "sufficient": available >= required_amount,
+            "available": available,
+            "required": required_amount,
+            "shortfall": max(0, required_amount - available),
+            "option_buying_power": option_buying_power,
+            "total_buying_power": buying_power,
+            "cash_balance": cash_balance,
+            "account_type": securities_account.get('type', 'UNKNOWN')
+        }
+        
+        return result
+    
     def preview_order(
         self,
         order: Dict[str, Any],
