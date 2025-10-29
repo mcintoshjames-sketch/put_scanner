@@ -140,6 +140,7 @@ def fetch_price(symbol: str) -> float:
         if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
             try:
                 val = float(PROVIDER_INSTANCE.last_price(symbol))
+                _record_data_source("price", PROVIDER)
                 return val
             except Exception as e:
                 st.warning(f"Provider {PROVIDER} failed for {symbol}: {e}")
@@ -152,6 +153,7 @@ def fetch_price(symbol: str) -> float:
         if ov != "yahoo" and _polygon_ready():
             try:
                 val = float(POLY.last_price(symbol))
+                _record_data_source("price", "polygon")
                 return val
             except Exception as e:
                 if ov == "polygon":
@@ -164,6 +166,7 @@ def fetch_price(symbol: str) -> float:
     t = yf.Ticker(symbol)
     try:
         val = float(t.history(period="1d")["Close"].iloc[-1])
+        _record_data_source("price", "yfinance")
         return val
     except Exception as e:
         return float("nan")
@@ -177,6 +180,7 @@ def fetch_expirations(symbol: str) -> list:
         if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
             try:
                 exps = PROVIDER_INSTANCE.expirations(symbol)
+                _record_data_source("expirations", PROVIDER)
                 return list(exps or [])
             except Exception as e:
                 st.warning(f"Provider {PROVIDER} failed for {symbol} expirations: {e}")
@@ -189,6 +193,7 @@ def fetch_expirations(symbol: str) -> list:
         if ov != "yahoo" and _polygon_ready():
             try:
                 exps = POLY.expirations(symbol)
+                _record_data_source("expirations", "polygon")
                 return list(exps or [])
             except Exception as e:
                 if ov == "polygon":
@@ -200,6 +205,7 @@ def fetch_expirations(symbol: str) -> list:
     # Fallback to yfinance
     try:
         vals = list(yf.Ticker(symbol).options or [])
+        _record_data_source("expirations", "yfinance")
         return vals
     except Exception as e:
         return []
@@ -218,6 +224,7 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
                 if "type" in df.columns:
                     df = df.copy()
                     df["type"] = df["type"].astype(str).str.lower()
+                _record_data_source("chain", PROVIDER)
                 return df
             except Exception as e:
                 st.warning(f"Provider {PROVIDER} failed for {symbol} chain: {e}")
@@ -234,6 +241,7 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
                 if "type" in df.columns:
                     df = df.copy()
                     df["type"] = df["type"].astype(str).str.lower()
+                _record_data_source("chain", "polygon")
                 return df
             except Exception as e:
                 if ov == "polygon":
@@ -256,7 +264,7 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
         tmp["type"] = typ
         dfs.append(tmp)
     out = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-    # _record_data_source("chain", "yahoo")
+    _record_data_source("chain", "yfinance")
     return out
 
 # --- Uncached probe helpers (for Diagnostics) ---
