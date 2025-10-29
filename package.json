@@ -1,0 +1,22 @@
+{
+    "name": "options-strategy-lab",
+    "version": "1.0.0",
+    "description": "Multi-strategy options income scanner: Cash-Secured Puts, Covered Calls, and Collars with Monte Carlo risk analysis",
+    "main": "strategy_lab.py",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/mcintoshjames-sketch/put_scanner"
+    },
+    "keywords": [
+        "options",
+        "trading",
+        "cash-secured-puts",
+        "covered-calls",
+        "collars",
+        "monte-carlo",
+        "streamlit",
+        "finance"
+    ],
+    "author": "mcintoshjames-sketch",
+    "license": "MIT"
+}

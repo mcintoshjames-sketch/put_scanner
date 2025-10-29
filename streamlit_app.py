@@ -49,14 +49,15 @@ with st.sidebar:
     run_btn = st.button("🔎 Scan")
     st.divider()
     st.subheader("Monte Carlo")
-    do_mc = st.checkbox("Enable Monte Carlo on a selected contract", value=True)
+    do_mc = st.checkbox(
+        "Enable Monte Carlo on a selected contract", value=True)
     paths = st.slider("MC paths", 5_000, 200_000, 50_000, step=5_000)
     loss_frac = st.slider("Loss threshold (% of collateral)",
-                      1, 50, 10, step=1) / 100.0
+                          1, 50, 10, step=1) / 100.0
     mc_drift = st.number_input("Annual drift (decimal)",
-                           value=0.00, step=0.01, format="%.2f")
+                               value=0.00, step=0.01, format="%.2f")
     mc_seed = st.number_input("Random seed (optional)",
-                          value=0, min_value=0, step=1)
+                              value=0, min_value=0, step=1)
     use_seed = None if mc_seed == 0 else int(mc_seed)
 
 
@@ -85,7 +86,6 @@ def run_scan(tickers: List[str], opts: dict) -> pd.DataFrame:
     out = out.sort_values(["Score", "ROI%_ann"], ascending=[
                           False, False]).reset_index(drop=True)
     return out
-
 
 
 # --- Persist last scan so the page can render even before running again ---
@@ -119,15 +119,16 @@ if run_btn:
 df = st.session_state["scan_df"]
 
 if df.empty:
-    st.warning("No candidates found with current filters. Try loosening OTM%, ROI, OI, spread, or earnings window.")
+    st.warning(
+        "No candidates found with current filters. Try loosening OTM%, ROI, OI, spread, or earnings window.")
 else:
     st.success(f"Found {len(df)} contracts")
 
     # Column chooser + sort controls
     default_cols = [
-        "Ticker","Price","Strike","Exp","Days","Premium",
-        "OTM%","ROI%_ann","IV","POEW","CushionSigma",
-        "Spread%","OI","CostBasis","Collateral","Ownable","Score"
+        "Ticker", "Price", "Strike", "Exp", "Days", "Premium",
+        "OTM%", "ROI%_ann", "IV", "POEW", "CushionSigma",
+        "Spread%", "OI", "CostBasis", "Collateral", "Ownable", "Score"
     ]
     available_cols = list(df.columns)
     cols_to_show = st.multiselect(
@@ -139,18 +140,22 @@ else:
     sort_col = st.selectbox(
         "Sort by",
         options=cols_to_show or available_cols,
-        index=(cols_to_show or available_cols).index("Score") if "Score" in (cols_to_show or available_cols) else 0
+        index=(cols_to_show or available_cols).index(
+            "Score") if "Score" in (cols_to_show or available_cols) else 0
     )
     sort_asc = st.toggle("Ascending sort", value=False)
 
     # Quick display filters -> build dff
     fl_col1, fl_col2, fl_col3 = st.columns(3)
     with fl_col1:
-        min_roi_show = st.slider("Display Min ROI%_ann", 0.0, 100.0, float(max(0.0, df["ROI%_ann"].min() if "ROI%_ann" in df else 0.0)), step=0.5)
+        min_roi_show = st.slider("Display Min ROI%_ann", 0.0, 100.0, float(
+            max(0.0, df["ROI%_ann"].min() if "ROI%_ann" in df else 0.0)), step=0.5)
     with fl_col2:
-        min_poew_show = st.slider("Display Min POEW", 0.0, 1.0, float(max(0.0, df["POEW"].min() if "POEW" in df else 0.0)), step=0.01)
+        min_poew_show = st.slider("Display Min POEW", 0.0, 1.0, float(
+            max(0.0, df["POEW"].min() if "POEW" in df else 0.0)), step=0.01)
     with fl_col3:
-        min_cush_show = st.slider("Display Min CushionSigma", 0.0, 3.0, float(min(1.0, df["CushionSigma"].min() if "CushionSigma" in df else 0.0)), step=0.1)
+        min_cush_show = st.slider("Display Min CushionSigma", 0.0, 3.0, float(
+            min(1.0, df["CushionSigma"].min() if "CushionSigma" in df else 0.0)), step=0.1)
 
     dff = df.copy()
     if "ROI%_ann" in dff:
@@ -161,12 +166,14 @@ else:
         dff = dff[dff["CushionSigma"] >= min_cush_show]
 
     if sort_col in dff.columns:
-        dff = dff.sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
+        dff = dff.sort_values(
+            sort_col, ascending=sort_asc).reset_index(drop=True)
 
     # Keep the latest view in session (optional, for other widgets)
     st.session_state["view_df"] = dff.copy()
 
-    st.dataframe(dff[cols_to_show] if cols_to_show else dff, use_container_width=True, height=600)
+    st.dataframe(dff[cols_to_show] if cols_to_show else dff,
+                 use_container_width=True, height=600)
 
     # Download button must live where dff exists
     if not dff.empty:
@@ -197,11 +204,14 @@ if do_mc and not dff.empty:
     # Optional pre-selection filters
     f1, f2, f3 = st.columns(3)
     with f1:
-        tick_filter = st.multiselect("Filter by ticker", sorted(pick_df["Ticker"].unique().tolist()))
+        tick_filter = st.multiselect("Filter by ticker", sorted(
+            pick_df["Ticker"].unique().tolist()))
     with f2:
-        exp_filter = st.multiselect("Filter by expiry", sorted(pick_df["Exp"].unique().tolist()))
+        exp_filter = st.multiselect(
+            "Filter by expiry", sorted(pick_df["Exp"].unique().tolist()))
     with f3:
-        min_roi_pick = st.slider("Min ROI%_ann (picker)", 0.0, 100.0, 0.0, step=0.5)
+        min_roi_pick = st.slider(
+            "Min ROI%_ann (picker)", 0.0, 100.0, 0.0, step=0.5)
 
     if tick_filter:
         pick_df = pick_df[pick_df["Ticker"].isin(tick_filter)]
@@ -213,7 +223,8 @@ if do_mc and not dff.empty:
     if pick_df.empty:
         st.info("No rows available for MC after picker filters — loosen filters.")
     else:
-        choice = st.selectbox("Choose a contract", options=pick_df[key_col].tolist(), index=0)
+        choice = st.selectbox("Choose a contract",
+                              options=pick_df[key_col].tolist(), index=0)
         sel_row = pick_df[pick_df[key_col] == choice].iloc[0]
 
         # ---- Run MC on the selected row ----
@@ -229,7 +240,8 @@ if do_mc and not dff.empty:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Prob(loss > threshold)", f"{mc['prob_loss_over']*100:.2f}%")
         c2.metric("Expected P&L / contract", f"${mc['expected_pnl']:,.0f}")
-        c3.metric("P&L (5% / 50% / 95%)", f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
+        c3.metric("P&L (5% / 50% / 95%)",
+                  f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
         c4.metric("Worst MC path", f"${mc['pnl_min']:,.0f}")
 
         st.caption(
@@ -243,7 +255,8 @@ if do_mc and not dff.empty:
         pnl = mc["pnl_paths"]
         bins = np.histogram_bin_edges(pnl, bins="auto")
         hist, edges = np.histogram(pnl, bins=bins)
-        chart_df = pd.DataFrame({"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
+        chart_df = pd.DataFrame(
+            {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
 
         base = alt.Chart(chart_df).mark_bar().encode(
             x=alt.X("pnl:Q", title="P&L per contract (USD)"),
@@ -251,13 +264,13 @@ if do_mc and not dff.empty:
             tooltip=["pnl", "count"]
         )
         rule_df = pd.DataFrame({"x": [mc["loss_threshold"]]})
-        rule = alt.Chart(rule_df).mark_rule(strokeDash=[4,4]).encode(x="x:Q")
+        rule = alt.Chart(rule_df).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
         st.altair_chart(base + rule, use_container_width=True)
 
         # ===================== AT-A-GLANCE SUMMARY =====================
         st.subheader("At-a-Glance: Trade Summary & Risk")
 
-        def pct(x): 
+        def pct(x):
             return f"{x*100:.2f}%"
 
         def ann_from_pnl(pnl, collateral, days):
@@ -327,16 +340,11 @@ if do_mc and not dff.empty:
             "Annualize via (1 + Return)^(365/Days) - 1 on collateral."
         )
 
-
-
-
-
     # Download
 csv = dff.to_csv(index=False).encode("utf-8")
 st.download_button(
-        "⬇️ Download CSV",
-        data=csv,
-        file_name=f"put_scanner_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-    )
-
+    "⬇️ Download CSV",
+    data=csv,
+    file_name=f"put_scanner_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+    mime="text/csv",
+)

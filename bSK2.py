@@ -32,7 +32,6 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ----------------------------- Utils -----------------------------
@@ -43,22 +42,6 @@ try:
 except Exception:  # pragma: no cover - optional
     POLY = None
     USE_POLYGON = False
-    # Try to initialize Polygon client directly if running standalone
-    try:
-        from providers.polygon import PolygonClient
-
-        # Try Streamlit secrets first, then fall back to environment variable
-        polygon_key = ""
-        if hasattr(st, "secrets") and "POLYGON_API_KEY" in st.secrets:
-            polygon_key = st.secrets["POLYGON_API_KEY"]
-        else:
-            polygon_key = os.getenv("POLYGON_API_KEY", "")
-
-        if polygon_key:
-            POLY = PolygonClient(api_key=polygon_key)
-            USE_POLYGON = True
-    except Exception:
-        pass  # Stay with Yahoo-only fallback
 
 # Diagnostics: Track which provider was used for each fetch_* call
 
@@ -112,34 +95,33 @@ def fetch_price(symbol: str) -> float:
     try:
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
-            # Skip session state in parallel context
-            # st.session_state["last_attempt"]["price"] = "polygon"
-            # st.session_state["data_errors"]["price"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
+            st.session_state["last_attempt"]["price"] = "polygon"
+            st.session_state["data_errors"]["price"][
+                "polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
             return float("nan")
         if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["price"] = "polygon"
+            st.session_state["last_attempt"]["price"] = "polygon"
             try:
                 val = float(POLY.last_price(symbol))
-                # _record_data_source("price", "polygon")
-                # st.session_state["data_errors"]["price"]["polygon"] = None
+                _record_data_source("price", "polygon")
+                st.session_state["data_errors"]["price"]["polygon"] = None
                 return val
             except Exception as e:
-                # st.session_state["data_errors"]["price"]["polygon"] = str(e)
+                st.session_state["data_errors"]["price"]["polygon"] = str(e)
                 if ov == "polygon":
                     return float("nan")
                 # else fall through to yahoo
     except Exception as e:
-        # st.session_state["data_errors"]["price"]["polygon"] = str(e)
-        pass
+        st.session_state["data_errors"]["price"]["polygon"] = str(e)
     t = yf.Ticker(symbol)
     try:
-        # st.session_state["last_attempt"]["price"] = "yahoo"
+        st.session_state["last_attempt"]["price"] = "yahoo"
         val = float(t.history(period="1d")["Close"].iloc[-1])
-        # _record_data_source("price", "yahoo")
-        # st.session_state["data_errors"]["price"]["yahoo"] = None
+        _record_data_source("price", "yahoo")
+        st.session_state["data_errors"]["price"]["yahoo"] = None
         return val
     except Exception as e:
-        # st.session_state["data_errors"]["price"]["yahoo"] = str(e)
+        st.session_state["data_errors"]["price"]["yahoo"] = str(e)
         return float("nan")
 
 
@@ -149,32 +131,33 @@ def fetch_expirations(symbol: str) -> list:
     try:
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
-            # st.session_state["last_attempt"]["expirations"] = "polygon"
-            # st.session_state["data_errors"]["expirations"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
+            st.session_state["last_attempt"]["expirations"] = "polygon"
+            st.session_state["data_errors"]["expirations"][
+                "polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
             return []
         if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["expirations"] = "polygon"
+            st.session_state["last_attempt"]["expirations"] = "polygon"
             try:
                 exps = POLY.expirations(symbol)
-                # _record_data_source("expirations", "polygon")
-                # st.session_state["data_errors"]["expirations"]["polygon"] = None
+                _record_data_source("expirations", "polygon")
+                st.session_state["data_errors"]["expirations"]["polygon"] = None
                 return list(exps or [])
             except Exception as e:
-                # st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
+                st.session_state["data_errors"]["expirations"]["polygon"] = str(
+                    e)
                 if ov == "polygon":
                     return []
                 # else fall through
     except Exception as e:
-        # st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
-        pass
+        st.session_state["data_errors"]["expirations"]["polygon"] = str(e)
     try:
-        # st.session_state["last_attempt"]["expirations"] = "yahoo"
+        st.session_state["last_attempt"]["expirations"] = "yahoo"
         vals = list(yf.Ticker(symbol).options or [])
-        # _record_data_source("expirations", "yahoo")
-        # st.session_state["data_errors"]["expirations"]["yahoo"] = None
+        _record_data_source("expirations", "yahoo")
+        st.session_state["data_errors"]["expirations"]["yahoo"] = None
         return vals
     except Exception as e:
-        # st.session_state["data_errors"]["expirations"]["yahoo"] = str(e)
+        st.session_state["data_errors"]["expirations"]["yahoo"] = str(e)
         return []
 
 
@@ -184,32 +167,32 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
     try:
         ov = _provider_override()
         if ov == "polygon" and not _polygon_ready():
-            # st.session_state["last_attempt"]["chain"] = "polygon"
-            # st.session_state["data_errors"]["chain"]["polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
+            st.session_state["last_attempt"]["chain"] = "polygon"
+            st.session_state["data_errors"]["chain"][
+                "polygon"] = "Polygon not configured (USE_POLYGON/POLY missing)"
             return pd.DataFrame()
         if ov != "yahoo" and _polygon_ready():
-            # st.session_state["last_attempt"]["chain"] = "polygon"
+            st.session_state["last_attempt"]["chain"] = "polygon"
             try:
                 df = POLY.chain_snapshot_df(symbol, expiration)
                 # Ensure 'type' is lower-case if present
                 if "type" in df.columns:
                     df = df.copy()
                     df["type"] = df["type"].astype(str).str.lower()
-                # _record_data_source("chain", "polygon")
-                # st.session_state["data_errors"]["chain"]["polygon"] = None
+                _record_data_source("chain", "polygon")
+                st.session_state["data_errors"]["chain"]["polygon"] = None
                 return df
             except Exception as e:
-                # st.session_state["data_errors"]["chain"]["polygon"] = str(e)
+                st.session_state["data_errors"]["chain"]["polygon"] = str(e)
                 if ov == "polygon":
                     return pd.DataFrame()
                 # else fall through
     except Exception as e:
-        # st.session_state["data_errors"]["chain"]["polygon"] = str(e)
-        pass
+        st.session_state["data_errors"]["chain"]["polygon"] = str(e)
     # yfinance fallback
     t = yf.Ticker(symbol)
     try:
-        # st.session_state["last_attempt"]["chain"] = "yahoo"
+        st.session_state["last_attempt"]["chain"] = "yahoo"
         ch = t.option_chain(expiration)
     except Exception:
         return pd.DataFrame()
@@ -221,7 +204,7 @@ def fetch_chain(symbol: str, expiration: str) -> pd.DataFrame:
         tmp["type"] = typ
         dfs.append(tmp)
     out = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-    # _record_data_source("chain", "yahoo")
+    _record_data_source("chain", "yahoo")
     return out
 
 # --- Uncached probe helpers (for Diagnostics) ---
@@ -735,7 +718,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
     try:
         S = fetch_price(ticker)
     except Exception:
-        return pd.DataFrame(), {}
+        return pd.DataFrame()
 
     expirations = fetch_expirations(ticker)
 
@@ -1772,8 +1755,7 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                       min_hv=15.0, max_hv=150.0, min_option_volume=50, check_liquidity=True):
     """
     Pre-screen tickers for options income strategy suitability.
-    Uses parallel processing for faster execution on large ticker lists.
-
+    
     OPTIMIZED FOR SHORT-TERM (10-45 DTE) INCOME STRATEGIES
     Scoring aligns with strategy aggregate score components:
     - High ROI potential (premium/price ratio)
@@ -1784,53 +1766,46 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
     Filters based on:
     - Stock price range (avoid penny stocks, expensive shares)
     - Average daily volume (liquidity)
-    - Historical volatility (premium potential) - HV in PERCENTAGE (e.g., 25.0 = 25%)
+    - Historical volatility (premium potential)
     - Options market activity (tradeable markets)
-
-    UNITS:
-    - HV_30d%: Historical volatility as PERCENTAGE (e.g., 25.0 for 25%)
-    - IV%: Implied volatility as PERCENTAGE (e.g., 30.0 for 30%)
-    - IV/HV: Ratio of the two percentages (both normalized to same units)
 
     Returns:
         pd.DataFrame with screening metrics for passed tickers, sorted by quality score
     """
+    results = []
 
-    def screen_single_ticker(ticker):
-        """Screen a single ticker - designed for parallel execution"""
+    for ticker in tickers:
         try:
             # Fetch basic stock data
             stock = yf.Ticker(ticker)
             hist = stock.history(period="3mo")
 
             if hist.empty or len(hist) < 20:
-                return None
+                continue
 
             # Current price
             current_price = hist['Close'].iloc[-1]
             if current_price < min_price or current_price > max_price:
-                return None
+                continue
 
             # Average volume
             avg_volume = hist['Volume'].mean()
             if avg_volume < min_avg_volume:
-                return None
+                continue
 
-            # Historical volatility (30-day annualized) - returns as PERCENTAGE
+            # Historical volatility (30-day annualized)
             returns = hist['Close'].pct_change().dropna()
             if len(returns) < 20:
-                return None
-            # HV calculation: std * sqrt(252) gives decimal, * 100 = percentage
-            # Result: percentage (e.g., 25.0 for 25%)
+                continue
             hv_30 = returns.iloc[-30:].std() * np.sqrt(252) * 100.0
 
             if hv_30 < min_hv or hv_30 > max_hv:
-                return None
+                continue
 
             # Check options availability and liquidity
             expirations = stock.options
             if not expirations or len(expirations) == 0:
-                return None
+                continue
 
             # Get near-term options chain (first expiration)
             try:
@@ -1851,36 +1826,28 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                     iv = atm_put.get('impliedVolatility', np.nan)
 
                 if pd.isna(iv) or iv <= 0:
-                    return None
+                    continue
 
-                # UNIT CONSISTENCY FIX: Ensure IV is in decimal form (0.0-1.0)
-                # yfinance typically returns IV as decimal (e.g., 0.25 for 25%)
-                # but can vary by source. Normalize here.
-                if iv > 5.0:  # If IV > 5, it's likely already a percentage
-                    iv = iv / 100.0  # Convert to decimal
-
-                iv_pct = iv * 100.0  # Now convert to percentage for display/comparison
+                iv_pct = iv * 100.0
 
                 # Option volume/OI check
                 opt_volume = atm_call.get('volume', 0) or 0
                 opt_oi = atm_call.get('openInterest', 0) or 0
 
                 if check_liquidity and (opt_volume < min_option_volume and opt_oi < min_option_volume * 10):
-                    return None
+                    continue
 
                 # Bid-Ask spread check for liquidity quality
                 bid = atm_call.get('bid', 0) or 0
                 ask = atm_call.get('ask', 0) or 0
                 mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else 0
                 spread_pct = ((ask - bid) / mid * 100.0) if mid > 0 else 100.0
-
+                
                 # Calculate IV Rank proxy (IV vs HV)
-                # Both iv_pct and hv_30 are in percentage units (e.g., 25.0 for 25%)
-                # Ratio of 1.0 = IV equals HV; >1.0 = IV elevated; <1.0 = IV compressed
                 iv_hv_ratio = iv_pct / hv_30 if hv_30 > 0 else 1.0
 
                 # ===== IMPROVED QUALITY SCORE ALIGNED WITH STRATEGY SCORING =====
-
+                
                 # 1. ROI Potential (35% weight in strategy)
                 # Premium/price ratio estimate: higher IV = higher premium
                 # Sweet spot: 25-50% IV for good premium without excessive risk
@@ -1891,10 +1858,9 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                 elif iv_pct <= 60:
                     roi_score = 1.0 - (iv_pct - 40) / 40.0  # Decline to 0.5
                 else:
-                    # Decline to 0.25
-                    roi_score = 0.5 * (1.0 - (iv_pct - 60) / 80.0)
+                    roi_score = 0.5 * (1.0 - (iv_pct - 60) / 80.0)  # Decline to 0.25
                 roi_score = max(0.25, roi_score)
-
+                
                 # 2. Theta/Gamma Optimization (30% weight in strategy)
                 # HV 20-40% is optimal for theta/gamma ratio 0.8-3.0
                 # Too low = not enough premium, too high = gamma explosion
@@ -1905,48 +1871,41 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                 elif hv_30 <= 35:
                     tg_score = 1.0  # Sweet spot for 21-35 DTE
                 elif hv_30 <= 50:
-                    tg_score = 1.0 - (hv_30 - 35) / 15.0 * \
-                        0.3  # Decline to 0.7
+                    tg_score = 1.0 - (hv_30 - 35) / 15.0 * 0.3  # Decline to 0.7
                 else:
-                    # Continue declining
-                    tg_score = 0.7 * (1.0 - (hv_30 - 50) / 100.0)
+                    tg_score = 0.7 * (1.0 - (hv_30 - 50) / 100.0)  # Continue declining
                 tg_score = max(0.2, min(tg_score, 1.0))
-
+                
                 # 3. Liquidity Score (20% weight in strategy)
                 # Based on spread, volume, and OI
-                spread_score = max(0.0, 1.0 - spread_pct /
-                                   20.0)  # Perfect at 0%, zero at 20%
-                # Max at 200 contracts
-                volume_score = min(opt_volume / 200, 1.0)
+                spread_score = max(0.0, 1.0 - spread_pct / 20.0)  # Perfect at 0%, zero at 20%
+                volume_score = min(opt_volume / 200, 1.0)  # Max at 200 contracts
                 oi_score = min(opt_oi / 1000, 1.0)  # Max at 1000 OI
                 liq_score = 0.5 * spread_score + 0.3 * volume_score + 0.2 * oi_score
-
+                
                 # 4. Cushion/Safety Score (15% weight in strategy)
                 # Stock volume and price stability
                 # Higher volume = easier to trade, better fills
-                # Max at 2M shares/day
-                vol_score = min(avg_volume / 2_000_000, 1.0)
-
+                vol_score = min(avg_volume / 2_000_000, 1.0)  # Max at 2M shares/day
+                
                 # Check price stability (lower daily range = more predictable)
-                price_range_pct = ((hist['High'].iloc[-20:].mean() - hist['Low'].iloc[-20:].mean()) /
-                                   hist['Close'].iloc[-20:].mean() * 100.0)
-                # Penalize >10% daily ranges
-                stability_score = max(0.3, 1.0 - price_range_pct / 10.0)
-
+                price_range_pct = ((hist['High'].iloc[-20:].mean() - hist['Low'].iloc[-20:].mean()) / 
+                                  hist['Close'].iloc[-20:].mean() * 100.0)
+                stability_score = max(0.3, 1.0 - price_range_pct / 10.0)  # Penalize >10% daily ranges
+                
                 cushion_score = 0.6 * vol_score + 0.4 * stability_score
-
+                
                 # ===== WEIGHTED QUALITY SCORE (aligned with strategy weights) =====
                 quality_score = (0.35 * roi_score +      # ROI potential
-                                 0.30 * tg_score +        # Theta/Gamma optimization
-                                 0.20 * liq_score +       # Liquidity
-                                 0.15 * cushion_score)    # Safety/cushion
+                               0.30 * tg_score +        # Theta/Gamma optimization
+                               0.20 * liq_score +       # Liquidity
+                               0.15 * cushion_score)    # Safety/cushion
 
                 # IV/HV ratio for additional insight
                 # Ideal: 1.0-1.5 (IV slightly elevated vs HV = good premium without crazy risk)
-                iv_rank_proxy = "HIGH" if iv_hv_ratio > 1.3 else (
-                    "NORMAL" if iv_hv_ratio > 0.8 else "LOW")
+                iv_rank_proxy = "HIGH" if iv_hv_ratio > 1.3 else ("NORMAL" if iv_hv_ratio > 0.8 else "LOW")
 
-                return {
+                results.append({
                     'Ticker': ticker,
                     'Price': round(current_price, 2),
                     'Avg_Volume': int(avg_volume),
@@ -1964,30 +1923,15 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                     'TG_Score': round(tg_score, 2),
                     'Liq_Score': round(liq_score, 2),
                     'Safe_Score': round(cushion_score, 2)
-                }
+                })
 
             except Exception:
                 # Chain fetch failed, skip this ticker
-                return None
+                continue
 
         except Exception:
             # Ticker fetch failed entirely, skip
-            return None
-
-    # Parallel execution for pre-screening
-    results = []
-    max_workers = min(len(tickers), 10)  # Cap at 10 workers for pre-screening
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all ticker screens
-        future_to_ticker = {executor.submit(
-            screen_single_ticker, ticker): ticker for ticker in tickers}
-
-        # Collect results as they complete
-        for future in as_completed(future_to_ticker):
-            result = future.result()
-            if result is not None:
-                results.append(result)
+            continue
 
     if not results:
         return pd.DataFrame()
@@ -2079,7 +2023,7 @@ with st.sidebar:
             st.divider()
             st.subheader("📊 Pre-Screen Results")
             ps_df = st.session_state["prescreen_results"]
-
+            
             # Add summary statistics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -2093,7 +2037,7 @@ with st.sidebar:
             with col4:
                 avg_iv = ps_df['IV%'].mean()
                 st.metric("Avg IV", f"{avg_iv:.1f}%")
-
+            
             st.caption("""
             **Quality Score Breakdown:**
             - 35% ROI Potential (IV 25-40% optimal)
@@ -2101,18 +2045,17 @@ with st.sidebar:
             - 20% Liquidity (spread, volume, OI)
             - 15% Safety/Cushion (volume, stability)
             """)
-
+            
             # Show main columns
-            display_cols = ['Ticker', 'Price', 'HV_30d%', 'IV%', 'IV/HV', 'IV_Rank',
-                            'Spread%', 'Opt_Volume', 'Opt_OI', 'Quality_Score']
+            display_cols = ['Ticker', 'Price', 'HV_30d%', 'IV%', 'IV/HV', 'IV_Rank', 
+                          'Spread%', 'Opt_Volume', 'Opt_OI', 'Quality_Score']
             display_cols = [c for c in display_cols if c in ps_df.columns]
-            st.dataframe(ps_df[display_cols], height=300,
-                         use_container_width=True)
-
+            st.dataframe(ps_df[display_cols], height=300, use_container_width=True)
+            
             # Expandable detailed scores
             with st.expander("🔍 View Detailed Component Scores"):
-                detail_cols = ['Ticker', 'Quality_Score', 'ROI_Score', 'TG_Score',
-                               'Liq_Score', 'Safe_Score', 'IV%', 'HV_30d%', 'Spread%']
+                detail_cols = ['Ticker', 'Quality_Score', 'ROI_Score', 'TG_Score', 
+                             'Liq_Score', 'Safe_Score', 'IV%', 'HV_30d%', 'Spread%']
                 detail_cols = [c for c in detail_cols if c in ps_df.columns]
                 st.dataframe(ps_df[detail_cols], use_container_width=True)
                 st.caption("""
@@ -2267,199 +2210,79 @@ with st.sidebar:
 
 @st.cache_data(show_spinner=True, ttl=120)
 def run_scans(tickers, params):
-    """
-    Run CSP, CC, and Collar scans in parallel across tickers.
-    Uses ThreadPoolExecutor for concurrent processing.
-    """
-    # Handle empty ticker list
-    if not tickers or len(tickers) == 0:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
-
     csp_all = []
     cc_all = []
     col_all = []
+    # Aggregate scan counters per strategy
     scan_counters = {"CSP": {}}
-
-    def scan_ticker(t):
-        """Scan a single ticker for all strategies"""
-        # CSP scan
+    for t in tickers:
         csp, csp_cnt = analyze_csp(
             t,
-            min_days=params["min_days"],
-            days_limit=params["days_limit"],
-            min_otm=params["min_otm_csp"],
-            min_oi=params["min_oi"],
-            max_spread=params["max_spread"],
-            min_roi=params["min_roi_csp"],
-            min_cushion=params["min_cushion"],
-            min_poew=params["min_poew"],
-            earn_window=params["earn_window"],
-            risk_free=params["risk_free"],
+            min_days=params["min_days"], days_limit=params["days_limit"], min_otm=params["min_otm_csp"], min_oi=params["min_oi"],
+            max_spread=params["max_spread"], min_roi=params["min_roi_csp"], min_cushion=params["min_cushion"],
+            min_poew=params["min_poew"], earn_window=params["earn_window"], risk_free=params["risk_free"],
             per_contract_cap=params["per_contract_cap"],
             bill_yield=params["bill_yield"]
         )
+        if not csp.empty:
+            csp_all.append(csp)
+        # Sum counters across tickers
+        for k, v in csp_cnt.items():
+            scan_counters["CSP"][k] = scan_counters["CSP"].get(k, 0) + int(v)
 
-        # CC scan
         cc = analyze_cc(
             t,
-            min_days=params["min_days"],
-            days_limit=params["days_limit"],
-            min_otm=params["min_otm_cc"],
-            min_oi=params["min_oi"],
-            max_spread=params["max_spread"],
-            min_roi=params["min_roi_cc"],
-            earn_window=params["earn_window"],
-            risk_free=params["risk_free"],
+            min_days=params["min_days"], days_limit=params["days_limit"], min_otm=params["min_otm_cc"], min_oi=params["min_oi"],
+            max_spread=params["max_spread"], min_roi=params["min_roi_cc"],
+            earn_window=params["earn_window"], risk_free=params["risk_free"],
             include_dividends=params["include_div_cc"],
             bill_yield=params["bill_yield"]
         )
+        if not cc.empty:
+            cc_all.append(cc)
 
-        # Collar scan
         col = analyze_collar(
             t,
-            min_days=params["min_days"],
-            days_limit=params["days_limit"],
-            min_oi=params["min_oi"],
-            max_spread=params["max_spread"],
-            call_delta_target=params["call_delta_tgt"],
-            put_delta_target=params["put_delta_tgt"],
-            earn_window=params["earn_window"],
-            risk_free=params["risk_free"],
-            include_dividends=params["include_div_col"],
-            min_net_credit=params["min_net_credit"],
+            min_days=params["min_days"], days_limit=params["days_limit"], min_oi=params["min_oi"], max_spread=params["max_spread"],
+            call_delta_target=params["call_delta_tgt"], put_delta_target=params["put_delta_tgt"],
+            earn_window=params["earn_window"], risk_free=params["risk_free"],
+            include_dividends=params["include_div_col"], min_net_credit=params["min_net_credit"],
             bill_yield=params["bill_yield"]
         )
+        if not col.empty:
+            col_all.append(col)
 
-        return csp, csp_cnt, cc, col
-
-    # Parallel execution with ThreadPoolExecutor
-    max_workers = min(len(tickers), 8)  # Cap at 8 concurrent workers
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all ticker scans
-        future_to_ticker = {executor.submit(
-            scan_ticker, t): t for t in tickers}
-
-        # Collect results as they complete
-        for future in as_completed(future_to_ticker):
-            ticker = future_to_ticker[future]
-            try:
-                csp, csp_cnt, cc, col = future.result()
-
-                # Accumulate results
-                if not csp.empty:
-                    csp_all.append(csp)
-                if not cc.empty:
-                    cc_all.append(cc)
-                if not col.empty:
-                    col_all.append(col)
-
-                # Aggregate counters
-                for k, v in csp_cnt.items():
-                    scan_counters["CSP"][k] = scan_counters["CSP"].get(
-                        k, 0) + int(v)
-
-            except Exception as e:
-                # Log error but continue with other tickers
-                st.warning(f"⚠️ Error scanning {ticker}: {str(e)}")
-                import traceback
-                st.text(traceback.format_exc())
-
-    # Combine all results
     df_csp = pd.concat(
         csp_all, ignore_index=True) if csp_all else pd.DataFrame()
     df_cc = pd.concat(cc_all, ignore_index=True) if cc_all else pd.DataFrame()
     df_col = pd.concat(
         col_all, ignore_index=True) if col_all else pd.DataFrame()
-
     return df_csp, df_cc, df_col, scan_counters
 
 
 # Run scans
 if run_btn:
     tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-
-    if not tickers:
-        st.error("Please enter at least one ticker symbol")
-    else:
-        opts = dict(
-            min_days=int(min_days),
-            days_limit=int(days_limit),
-            min_otm_csp=float(min_otm_csp), min_roi_csp=float(min_roi_csp),
-            min_cushion=float(min_cushion), min_poew=float(min_poew),
-            min_otm_cc=float(min_otm_cc), min_roi_cc=float(min_roi_cc),
-            include_div_cc=bool(include_div_cc),
-            call_delta_tgt=float(call_delta_tgt), put_delta_tgt=float(put_delta_tgt),
-            include_div_col=bool(include_div_col), min_net_credit=float(min_net_credit),
-            min_oi=int(min_oi), max_spread=float(max_spread),
-            earn_window=int(earn_window), risk_free=float(risk_free),
-            per_contract_cap=per_contract_cap,
-            bill_yield=float(t_bill_yield)
-        )
-        try:
-            with st.spinner("Scanning..."):
-                df_csp, df_cc, df_collar, scan_counters = run_scans(
-                    tickers, opts)
-            st.session_state["df_csp"] = df_csp
-            st.session_state["df_cc"] = df_cc
-            st.session_state["df_collar"] = df_collar
-            st.session_state["scan_counters"] = scan_counters
-
-            # Show results summary
-            total_results = len(df_csp) + len(df_cc) + len(df_collar)
-            if total_results > 0:
-                st.success(
-                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar opportunities")
-            else:
-                st.warning(
-                    "No opportunities found with current filters. Try loosening your criteria.")
-
-                # ALWAYS show debug info when no results
-                with st.expander("🔍 Debug: Why no results?", expanded=True):
-                    st.write(f"**Tickers scanned:** {', '.join(tickers)}")
-                    st.write(f"**Scan counters:** {scan_counters}")
-
-                    # Show scan counters to help debug
-                    if "CSP" in scan_counters and scan_counters["CSP"]:
-                        st.write("**CSP Filter Results:**")
-                        counters = scan_counters["CSP"]
-                        if counters.get("expirations", 0) > 0:
-                            st.write(
-                                f"- Expirations checked: {counters.get('expirations', 0)}")
-                            st.write(
-                                f"- Total option rows: {counters.get('rows', 0)}")
-                            st.write(
-                                f"- Passed premium check: {counters.get('premium_pass', 0)}")
-                            st.write(
-                                f"- Passed OTM% check: {counters.get('otm_pass', 0)}")
-                            st.write(
-                                f"- Passed ROI% check: {counters.get('roi_pass', 0)}")
-                            st.write(
-                                f"- Passed OI check: {counters.get('oi_pass', 0)}")
-                            st.write(
-                                f"- Passed spread check: {counters.get('spread_pass', 0)}")
-                            st.write(
-                                f"- Passed cushion check: {counters.get('cushion_pass', 0)}")
-                            st.write(
-                                f"- Passed POEW check: {counters.get('poew_pass', 0)}")
-                            st.write(
-                                f"- Final results: {counters.get('final', 0)}")
-                        else:
-                            st.write(
-                                "❌ No expirations were processed. This might indicate:")
-                            st.write(
-                                "- Network/API issues fetching option chains")
-                            st.write(
-                                "- All expirations filtered out by date range")
-                            st.write("- Ticker has no options available")
-                    else:
-                        st.write(
-                            "❌ **No CSP counters available - scan may have failed completely**")
-                        st.write("Check if warnings appeared above during scan")
-        except Exception as e:
-            st.error(f"Error during scan: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
+    opts = dict(
+        min_days=int(min_days),
+        days_limit=int(days_limit),
+        min_otm_csp=float(min_otm_csp), min_roi_csp=float(min_roi_csp),
+        min_cushion=float(min_cushion), min_poew=float(min_poew),
+        min_otm_cc=float(min_otm_cc), min_roi_cc=float(min_roi_cc),
+        include_div_cc=bool(include_div_cc),
+        call_delta_tgt=float(call_delta_tgt), put_delta_tgt=float(put_delta_tgt),
+        include_div_col=bool(include_div_col), min_net_credit=float(min_net_credit),
+        min_oi=int(min_oi), max_spread=float(max_spread),
+        earn_window=int(earn_window), risk_free=float(risk_free),
+        per_contract_cap=per_contract_cap,
+        bill_yield=float(t_bill_yield)
+    )
+    with st.spinner("Scanning..."):
+        df_csp, df_cc, df_collar, scan_counters = run_scans(tickers, opts)
+    st.session_state["df_csp"] = df_csp
+    st.session_state["df_cc"] = df_cc
+    st.session_state["df_collar"] = df_collar
+    st.session_state["scan_counters"] = scan_counters
 
 # Read latest results
 
@@ -2562,62 +2385,61 @@ def _get_selected_row():
 
 
 # --- Earnings Calendar Display ---
-# DISABLED: Commented out to improve performance
-# st.divider()
-# st.subheader("📅 Earnings Calendar")
-#
-# # Collect all unique tickers from results
-# all_tickers = set()
-# if not df_csp.empty:
-#     all_tickers.update(df_csp["Ticker"].unique())
-# if not df_cc.empty:
-#     all_tickers.update(df_cc["Ticker"].unique())
-# if not df_collar.empty:
-#     all_tickers.update(df_collar["Ticker"].unique())
-#
-# if all_tickers:
-#     with st.spinner("Fetching earnings dates..."):
-#         earnings_data = []
-#         failed_tickers = []
-#         for ticker in sorted(all_tickers):
-#             try:
-#                 stock = yf.Ticker(ticker)
-#                 earn_date = get_earnings_date(stock)
-#                 if earn_date:
-#                     days_to_earn = (
-#                         earn_date - datetime.now(timezone.utc).date()).days
-#                     status = "🟢 Safe" if abs(days_to_earn) > int(
-#                         earn_window) else "🔴 CAUTION"
-#                     earnings_data.append({
-#                         "Ticker": ticker,
-#                         "Earnings Date": earn_date.strftime("%Y-%m-%d"),
-#                         "Days Away": days_to_earn,
-#                         "Status": status
-#                     })
-#                 else:
-#                     failed_tickers.append(ticker)
-#             except Exception as e:
-#                 failed_tickers.append(ticker)
-#
-#     if earnings_data:
-#         earnings_df = pd.DataFrame(earnings_data).sort_values("Days Away")
-#         st.dataframe(earnings_df, use_container_width=True, height=200)
-#         st.caption(
-#             f"🔴 CAUTION: Earnings within ±{int(earn_window)} days (positions filtered out automatically)")
-#         st.caption(f"🟢 Safe: Earnings beyond ±{int(earn_window)} days")
-#         if failed_tickers:
-#             with st.expander(f"ℹ️ No earnings data for {len(failed_tickers)} ticker(s) - Click to view"):
-#                 st.write(", ".join(failed_tickers))
-#                 st.caption(
-#                     "**Note:** ETFs, small-cap stocks, and some international tickers may lack earnings data. Always verify with your broker.")
-#     else:
-#         st.warning(
-#             f"⚠️ No earnings dates available for: {', '.join(sorted(all_tickers))}")
-#         st.info("**Why?** yfinance often lacks earnings data for ETFs and some stocks. For these tickers, manually verify earnings dates before trading. The automatic earnings filter only works when data is available.")
-# else:
-#     st.info("Run a scan to see earnings calendar for your tickers.")
-#
-# st.divider()
+st.divider()
+st.subheader("📅 Earnings Calendar")
+
+# Collect all unique tickers from results
+all_tickers = set()
+if not df_csp.empty:
+    all_tickers.update(df_csp["Ticker"].unique())
+if not df_cc.empty:
+    all_tickers.update(df_cc["Ticker"].unique())
+if not df_collar.empty:
+    all_tickers.update(df_collar["Ticker"].unique())
+
+if all_tickers:
+    with st.spinner("Fetching earnings dates..."):
+        earnings_data = []
+        failed_tickers = []
+        for ticker in sorted(all_tickers):
+            try:
+                stock = yf.Ticker(ticker)
+                earn_date = get_earnings_date(stock)
+                if earn_date:
+                    days_to_earn = (
+                        earn_date - datetime.now(timezone.utc).date()).days
+                    status = "🟢 Safe" if abs(days_to_earn) > int(
+                        earn_window) else "🔴 CAUTION"
+                    earnings_data.append({
+                        "Ticker": ticker,
+                        "Earnings Date": earn_date.strftime("%Y-%m-%d"),
+                        "Days Away": days_to_earn,
+                        "Status": status
+                    })
+                else:
+                    failed_tickers.append(ticker)
+            except Exception as e:
+                failed_tickers.append(ticker)
+
+    if earnings_data:
+        earnings_df = pd.DataFrame(earnings_data).sort_values("Days Away")
+        st.dataframe(earnings_df, use_container_width=True, height=200)
+        st.caption(
+            f"🔴 CAUTION: Earnings within ±{int(earn_window)} days (positions filtered out automatically)")
+        st.caption(f"🟢 Safe: Earnings beyond ±{int(earn_window)} days")
+        if failed_tickers:
+            with st.expander(f"ℹ️ No earnings data for {len(failed_tickers)} ticker(s) - Click to view"):
+                st.write(", ".join(failed_tickers))
+                st.caption(
+                    "**Note:** ETFs, small-cap stocks, and some international tickers may lack earnings data. Always verify with your broker.")
+    else:
+        st.warning(
+            f"⚠️ No earnings dates available for: {', '.join(sorted(all_tickers))}")
+        st.info("**Why?** yfinance often lacks earnings data for ETFs and some stocks. For these tickers, manually verify earnings dates before trading. The automatic earnings filter only works when data is available.")
+else:
+    st.info("Run a scan to see earnings calendar for your tickers.")
+
+st.divider()
 
 tabs = st.tabs([
     "Cash‑Secured Puts", "Covered Calls", "Collars",
@@ -2748,107 +2570,23 @@ with tabs[4]:
     if row is None:
         st.info("Select a strategy/contract above and ensure scans have results.")
     else:
-        # Price Override Section
-        st.divider()
-        with st.expander("💰 Price Override (for live execution)", expanded=False):
-            st.caption(
-                "Override stock price and/or premium if market has moved since scan")
-
-            original_price = float(row["Price"])
-            original_premium = float(
-                row.get("Premium", row.get("CallPrem", 0.0)))
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                use_custom_price = st.checkbox(
-                    "Override stock price",
-                    value=False,
-                    key="use_custom_stock_price_mc",
-                    help="Use current market price instead of scan price"
-                )
-                if use_custom_price:
-                    custom_stock_price = st.number_input(
-                        f"Current stock price (scan: ${original_price:.2f})",
-                        value=original_price,
-                        min_value=0.01,
-                        step=0.01,
-                        format="%.2f",
-                        key="custom_stock_price_mc"
-                    )
-                    price_change_pct = (
-                        (custom_stock_price - original_price) / original_price) * 100
-                    st.caption(f"Change: {price_change_pct:+.2f}%")
-                else:
-                    custom_stock_price = original_price
-
-            with col2:
-                use_custom_premium = st.checkbox(
-                    "Override premium",
-                    value=False,
-                    key="use_custom_premium_mc",
-                    help="Use current option premium quote"
-                )
-                if use_custom_premium:
-                    custom_premium = st.number_input(
-                        f"Current premium (scan: ${original_premium:.2f})",
-                        value=original_premium,
-                        min_value=0.01,
-                        step=0.01,
-                        format="%.2f",
-                        key="custom_premium_value_mc"
-                    )
-                    premium_change_pct = (
-                        (custom_premium - original_premium) / original_premium) * 100
-                    st.caption(f"Change: {premium_change_pct:+.2f}%")
-                else:
-                    custom_premium = original_premium
-
-            with col3:
-                if use_custom_price or use_custom_premium:
-                    st.markdown("**Updated Metrics:**")
-                    if strat_choice == "CSP":
-                        new_otm = (
-                            (custom_stock_price - float(row["Strike"])) / custom_stock_price) * 100
-                        new_roi = (custom_premium / float(row["Strike"])) * (
-                            365.0 / max(int(row.get("Days", 30)), 1)) * 100
-                        st.metric("OTM%", f"{new_otm:.2f}%",
-                                  delta=f"{new_otm - float(row.get('OTM%', 0)):.2f}%")
-                        st.metric("ROI% (ann)", f"{new_roi:.2f}%",
-                                  delta=f"{new_roi - float(row.get('ROI%_ann', 0)):.2f}%")
-                    elif strat_choice == "CC":
-                        new_otm = (
-                            (float(row["Strike"]) - custom_stock_price) / custom_stock_price) * 100
-                        new_roi = (custom_premium / custom_stock_price) * \
-                            (365.0 / max(int(row.get("Days", 30)), 1)) * 100
-                        st.metric("OTM%", f"{new_otm:.2f}%",
-                                  delta=f"{new_otm - float(row.get('OTM%', 0)):.2f}%")
-                        st.metric("ROI% (ann)", f"{new_roi:.2f}%",
-                                  delta=f"{new_roi - float(row.get('ROI%_ann', 0)):.2f}%")
-
-        st.divider()
-
         # Guard against degenerate T=0 simulations by using at least 1 day in MC
         row_days = int(row.get("Days", 0))
         days_for_mc = max(1, row_days)
         if row_days <= 0:
             st.caption(
                 "Note: Selected contract has 0 DTE — using 1 day for Monte Carlo to avoid degenerate paths.")
-
-        # Use custom prices if overridden, otherwise use scan prices
-        execution_price = custom_stock_price if 'custom_stock_price' in locals() else original_price
-        execution_premium = custom_premium if 'custom_premium' in locals() else original_premium
-
         # Build MC params per strategy
         if strat_choice == "CSP":
             iv_raw = float(row.get("IV", float("nan")))
             iv = (iv_raw / 100.0) if (iv_raw ==
                                       iv_raw and iv_raw > 0.0) else 0.20
             params = dict(
-                S0=execution_price,  # Use overridden price
+                S0=float(row["Price"]),
                 days=int(days_for_mc),
                 iv=iv,
                 Kp=float(row["Strike"]),
-                put_premium=execution_premium,  # Use overridden premium
+                put_premium=float(row["Premium"]),
                 div_ps_annual=0.0,
             )
             mc = mc_pnl("CSP", params, n_paths=int(paths), mu=float(
@@ -2885,11 +2623,11 @@ with tabs[4]:
             div_ps_annual = float(
                 row.get("DivAnnualPS", 0.0)) if "DivAnnualPS" in row else 0.0
             params = dict(
-                S0=execution_price,  # Use overridden price
+                S0=float(row["Price"]),
                 days=int(days_for_mc),
                 iv=iv,
                 Kc=float(row["Strike"]),
-                call_premium=execution_premium,  # Use overridden premium
+                call_premium=float(row["Premium"]),
                 div_ps_annual=div_ps_annual,
             )
             mc = mc_pnl("CC", params, n_paths=int(paths),
@@ -2899,13 +2637,13 @@ with tabs[4]:
             div_ps_annual = float(
                 row.get("DivAnnualPS", 0.0)) if "DivAnnualPS" in row else 0.0
             params = dict(
-                S0=execution_price,  # Use overridden price
+                S0=float(row["Price"]),
                 days=int(days_for_mc),
                 iv=iv,
                 Kc=float(row["CallStrike"]),
-                call_premium=float(row.get("CallPrem", 0.0)),
+                call_premium=float(row["CallPrem"]),
                 Kp=float(row["PutStrike"]),
-                put_premium=float(row.get("PutPrem", 0.0)),
+                put_premium=float(row["PutPrem"]),
                 div_ps_annual=div_ps_annual,
             )
             mc = mc_pnl("COLLAR", params, n_paths=int(

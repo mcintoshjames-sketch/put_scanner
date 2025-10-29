@@ -25,3 +25,6 @@ venv/
 # Local data / creds (if any)
 *.sqlite3
 secrets*.json
+
+# Streamlit secrets (IMPORTANT: Never commit secrets!)
+.streamlit/secrets.toml
