@@ -19,6 +19,7 @@ import math
 from datetime import datetime, timedelta, timezone
 import os
 import threading
+import json
 
 # Import provider system
 try:
@@ -2807,6 +2808,65 @@ with tabs[0]:
         st.divider()
         with st.expander("🔧 Trade Execution (Test Mode)", expanded=False):
             st.info("📋 **Test Mode Enabled**: Orders will be exported to JSON files for review, not sent to Schwab API")
+            
+            # Account Numbers Section
+            st.subheader("📋 Step 1: Get Account Numbers")
+            st.write("**Required**: Retrieve your encrypted account ID for order placement")
+            st.caption("Schwab API requires encrypted account IDs (hashValue) for all trading operations.")
+            
+            if st.button("🔍 Retrieve Account Numbers", use_container_width=True):
+                try:
+                    from providers.schwab_trading import SchwabTrader
+                    from providers.schwab import SchwabClient
+                    
+                    # Initialize Schwab client
+                    if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                        # Get the underlying schwab client
+                        schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                        if schwab_client:
+                            trader = SchwabTrader(dry_run=True, client=schwab_client)
+                            accounts = trader.get_account_numbers()
+                            
+                            st.success(f"✅ Retrieved {len(accounts)} account(s)")
+                            
+                            for i, account in enumerate(accounts, 1):
+                                with st.expander(f"Account #{i}: {account.get('accountNumber', 'Unknown')}", expanded=True):
+                                    st.write("**Plain Text Account Number:**")
+                                    st.code(account.get('accountNumber', 'N/A'))
+                                    
+                                    st.write("**Encrypted Hash Value (use this for orders):**")
+                                    st.code(account.get('hashValue', 'N/A'))
+                                    
+                                    st.info("💡 Copy the hashValue above and set it as SCHWAB_ACCOUNT_ID environment variable")
+                                    
+                                    # Provide download button for account info
+                                    account_json = json.dumps({
+                                        "accountNumber": account.get('accountNumber'),
+                                        "hashValue": account.get('hashValue'),
+                                        "retrieved_at": datetime.now().isoformat()
+                                    }, indent=2)
+                                    
+                                    st.download_button(
+                                        label="⬇️ Download Account Info",
+                                        data=account_json,
+                                        file_name=f"schwab_account_{account.get('accountNumber', 'unknown')}.json",
+                                        mime="application/json"
+                                    )
+                            
+                            st.caption("📁 Account numbers also saved to ./trade_orders/account_numbers_*.json")
+                        else:
+                            st.error("❌ Schwab client not available. Check provider initialization.")
+                    else:
+                        st.error("❌ Schwab provider not active. Set OPTIONS_PROVIDER=schwab and configure credentials.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error retrieving account numbers: {str(e)}")
+                    import traceback
+                    with st.expander("Error Details"):
+                        st.code(traceback.format_exc())
+            
+            st.divider()
+            st.subheader("📝 Step 2: Create Order")
             
             # Select a contract from the results
             if not df_csp.empty:

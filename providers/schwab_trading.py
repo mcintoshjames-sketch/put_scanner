@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, Literal, List
 from pathlib import Path
 
 
@@ -19,7 +19,8 @@ class SchwabTrader:
         self,
         account_id: Optional[str] = None,
         dry_run: bool = True,
-        export_dir: Optional[str] = None
+        export_dir: Optional[str] = None,
+        client = None
     ):
         """
         Initialize Schwab trader.
@@ -28,11 +29,60 @@ class SchwabTrader:
             account_id: Schwab account ID (encrypted account number)
             dry_run: If True, export orders to file instead of sending to API
             export_dir: Directory to save order files (default: ./trade_orders)
+            client: Optional Schwab API client (from providers.schwab.SchwabClient)
         """
         self.account_id = account_id or os.environ.get("SCHWAB_ACCOUNT_ID")
         self.dry_run = dry_run
         self.export_dir = Path(export_dir or "./trade_orders")
         self.export_dir.mkdir(exist_ok=True)
+        self.client = client
+    
+    def get_account_numbers(self) -> List[Dict[str, str]]:
+        """
+        Retrieve account numbers from Schwab API.
+        Returns list of {accountNumber: plain text, hashValue: encrypted} pairs.
+        
+        The encrypted hashValue must be used for all subsequent API calls.
+        
+        Returns:
+            List of account dictionaries with accountNumber and hashValue
+            
+        Example response:
+            [
+                {
+                    "accountNumber": "123456789",
+                    "hashValue": "A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W3X4Y5Z6"
+                }
+            ]
+        """
+        if not self.client:
+            raise RuntimeError(
+                "Schwab API client required. Initialize SchwabTrader with a client instance."
+            )
+        
+        try:
+            # Call Schwab API to get account numbers
+            response = self.client.client.get_account_numbers()
+            
+            # The response should be a list of account objects
+            # Format: [{"accountNumber": "...", "hashValue": "..."}]
+            accounts = response.json() if hasattr(response, 'json') else response
+            
+            # Save to file for reference
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"account_numbers_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "accounts": accounts,
+                    "note": "Use the 'hashValue' field as accountNumber in all API calls"
+                }, f, indent=2)
+            
+            return accounts
+        
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve account numbers: {e}")
     
     def create_option_order(
         self,
