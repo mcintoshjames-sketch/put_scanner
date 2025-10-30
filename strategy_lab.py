@@ -1635,6 +1635,54 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             # Apply all penalties to base score
             score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
 
+            # ===== MONTE CARLO PENALTY: Validate against realistic price paths =====
+            # Run quick MC simulation during scan to filter negative expected value
+            mc_params = {
+                "S0": S,
+                "days": D,
+                "iv": iv_dec if (iv_dec == iv_dec and iv_dec > 0.0) else 0.20,
+                "Kc": K,  # Call strike for CC strategy
+                "call_premium": prem,  # Premium received
+                "div_ps_annual": div_ps_annual  # Annual dividend per share
+            }
+            try:
+                mc_result = mc_pnl("CC", mc_params, n_paths=1000, mu=0.07, seed=None, rf=risk_free)
+                mc_expected_pnl = mc_result['pnl_expected']
+                mc_roi_ann = mc_result['roi_ann_expected']
+                
+                # Calculate max profit (premium received per contract)
+                max_profit = prem * 100.0
+                
+                # Graduated penalty based on MC expected P&L vs. max profit
+                # Negative expected value gets heavy penalty
+                if mc_expected_pnl < 0:
+                    mc_penalty = 0.20  # 80% score reduction for negative expected value
+                elif mc_expected_pnl < max_profit * 0.25:
+                    # Linear scale from 0 to 25% of max profit: penalty 0.20 -> 0.50
+                    mc_penalty = 0.20 + (mc_expected_pnl / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.50:
+                    # Linear scale from 25% to 50% of max profit: penalty 0.50 -> 0.80
+                    mc_penalty = 0.50 + ((mc_expected_pnl - max_profit * 0.25) / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.75:
+                    # Linear scale from 50% to 75% of max profit: penalty 0.80 -> 0.90
+                    mc_penalty = 0.80 + ((mc_expected_pnl - max_profit * 0.50) / (max_profit * 0.25)) * 0.10
+                else:
+                    # Above 75% of max profit: penalty 0.90 -> 1.0 (minimal reduction)
+                    mc_penalty = 0.90 + min((mc_expected_pnl - max_profit * 0.75) / (max_profit * 0.25), 1.0) * 0.10
+                
+                # Apply 70% weight to MC penalty
+                # Score impact: 
+                #  - Negative MC P&L: score * 0.30 + score * 0.70 * 0.20 = score * 0.44 (56% reduction)
+                #  - MC P&L at 25%: score * 0.65 (35% reduction)
+                #  - MC P&L at 50%: score * 0.86 (14% reduction)
+                #  - MC P&L at 75%: score * 0.93 (7% reduction)
+                score = score * (0.30 + 0.70 * mc_penalty)
+                
+            except Exception as e:
+                # If MC simulation fails, set MC values to NaN but don't penalize score
+                mc_expected_pnl = float("nan")
+                mc_roi_ann = float("nan")
+
             # Check expiration risk
             exp_risk = check_expiration_risk(
                 expiration_str=exp,
@@ -1660,6 +1708,10 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
                 "DivAnnualPS": round(div_ps_annual, 4),
+                
+                # Monte Carlo expected value (to assess realistic P&L)
+                "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
+                "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
