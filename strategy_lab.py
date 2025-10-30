@@ -2524,6 +2524,54 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             # Apply all penalties to base score
             score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
             
+            # ===== MONTE CARLO EXPECTED P&L PENALTY =====
+            # Run quick MC simulation to validate expected P&L
+            # This prevents negative-EV trades from scoring highly
+            mc_params = {
+                "S0": S,
+                "days": D,
+                "iv": ps["iv"],
+                "sell_strike": Ks,
+                "buy_strike": Kl,
+                "net_credit": net_credit
+            }
+            try:
+                # Use 1000 paths for speed (vs 10k-20k for full analysis)
+                mc_result = mc_pnl("BULL_PUT_SPREAD", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+                mc_expected_pnl = mc_result['pnl_expected']
+                mc_roi_ann = mc_result['roi_ann_expected']
+                
+                # Calculate MC penalty based on expected P&L vs max profit
+                max_profit = net_credit * 100.0
+                if mc_expected_pnl < 0:
+                    # Negative expected P&L: severe penalty (80% reduction)
+                    mc_penalty = 0.20
+                elif mc_expected_pnl < max_profit * 0.25:
+                    # Expected P&L < 25% of max profit: strong penalty (50-80% reduction)
+                    mc_penalty = 0.20 + (mc_expected_pnl / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.50:
+                    # Expected P&L < 50% of max profit: moderate penalty (20-50% reduction)
+                    mc_penalty = 0.50 + ((mc_expected_pnl - max_profit * 0.25) / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.75:
+                    # Expected P&L < 75% of max profit: light penalty (10-20% reduction)
+                    mc_penalty = 0.80 + ((mc_expected_pnl - max_profit * 0.50) / (max_profit * 0.25)) * 0.10
+                else:
+                    # Expected P&L >= 75% of max profit: minimal/no penalty
+                    mc_penalty = 0.90 + min((mc_expected_pnl - max_profit * 0.75) / (max_profit * 0.25), 1.0) * 0.10
+            except Exception:
+                # If MC fails, apply moderate penalty as conservative approach
+                mc_penalty = 0.70
+                mc_expected_pnl = float("nan")
+                mc_roi_ann = float("nan")
+            
+            # Apply MC penalty with HIGH WEIGHT (70% contribution to final score)
+            # This makes MC validation the DOMINANT factor
+            # Formula: score * (0.30 + 0.70 * mc_penalty)
+            # - Negative MC P&L: 0.30 + 0.70*0.20 = 0.44 (56% reduction)
+            # - MC P&L at 50% of max: 0.30 + 0.70*0.80 = 0.86 (14% reduction)
+            # - MC P&L at 90% of max: 0.30 + 0.70*0.96 = 0.97 (3% reduction)
+            score = score * (0.30 + 0.70 * mc_penalty)
+            
             # Check expiration risk for Bull Put Spread (2-leg strategy)
             exp_risk = check_expiration_risk(
                 expiration_str=exp,
@@ -2559,6 +2607,8 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 "Volume": ps["volume"],
                 "Capital": int(capital_at_risk),
                 "DaysToEarnings": days_to_earnings,
+                "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
+                "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
                 "Score": round(score, 6),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
@@ -2837,6 +2887,54 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             # Apply all penalties to base score
             score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
             
+            # ===== MONTE CARLO EXPECTED P&L PENALTY =====
+            # Run quick MC simulation to validate expected P&L
+            # This prevents negative-EV trades from scoring highly
+            mc_params = {
+                "S0": S,
+                "days": D,
+                "iv": cs["iv"],
+                "sell_strike": Ks,
+                "buy_strike": Kl,
+                "net_credit": net_credit
+            }
+            try:
+                # Use 1000 paths for speed (vs 10k-20k for full analysis)
+                mc_result = mc_pnl("BEAR_CALL_SPREAD", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+                mc_expected_pnl = mc_result['pnl_expected']
+                mc_roi_ann = mc_result['roi_ann_expected']
+                
+                # Calculate MC penalty based on expected P&L vs max profit
+                max_profit = net_credit * 100.0
+                if mc_expected_pnl < 0:
+                    # Negative expected P&L: severe penalty (80% reduction)
+                    mc_penalty = 0.20
+                elif mc_expected_pnl < max_profit * 0.25:
+                    # Expected P&L < 25% of max profit: strong penalty (50-80% reduction)
+                    mc_penalty = 0.20 + (mc_expected_pnl / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.50:
+                    # Expected P&L < 50% of max profit: moderate penalty (20-50% reduction)
+                    mc_penalty = 0.50 + ((mc_expected_pnl - max_profit * 0.25) / (max_profit * 0.25)) * 0.30
+                elif mc_expected_pnl < max_profit * 0.75:
+                    # Expected P&L < 75% of max profit: light penalty (10-20% reduction)
+                    mc_penalty = 0.80 + ((mc_expected_pnl - max_profit * 0.50) / (max_profit * 0.25)) * 0.10
+                else:
+                    # Expected P&L >= 75% of max profit: minimal/no penalty
+                    mc_penalty = 0.90 + min((mc_expected_pnl - max_profit * 0.75) / (max_profit * 0.25), 1.0) * 0.10
+            except Exception:
+                # If MC fails, apply moderate penalty as conservative approach
+                mc_penalty = 0.70
+                mc_expected_pnl = float("nan")
+                mc_roi_ann = float("nan")
+            
+            # Apply MC penalty with HIGH WEIGHT (70% contribution to final score)
+            # This makes MC validation the DOMINANT factor
+            # Formula: score * (0.30 + 0.70 * mc_penalty)
+            # - Negative MC P&L: 0.30 + 0.70*0.20 = 0.44 (56% reduction)
+            # - MC P&L at 50% of max: 0.30 + 0.70*0.80 = 0.86 (14% reduction)
+            # - MC P&L at 90% of max: 0.30 + 0.70*0.96 = 0.97 (3% reduction)
+            score = score * (0.30 + 0.70 * mc_penalty)
+            
             # Check expiration risk for Bear Call Spread (2-leg strategy)
             exp_risk = check_expiration_risk(
                 expiration_str=exp,
@@ -2872,6 +2970,8 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 "Volume": cs["volume"],
                 "Capital": int(capital_at_risk),
                 "DaysToEarnings": days_to_earnings,
+                "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
+                "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
                 "Score": round(score, 6),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
