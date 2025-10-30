@@ -3608,10 +3608,10 @@ with tabs[4]:
                         df_display['display'] = (
                             df_display['Ticker'] + " " +
                             df_display['Exp'] +
-                            " P: $" + df_display['LongPut'].astype(str) + "/" +
-                            df_display['ShortPut'].astype(str) +
-                            " C: $" + df_display['ShortCall'].astype(str) + "/" +
-                            df_display['LongCall'].astype(str) +
+                            " P: $" + df_display['PutLongStrike'].astype(str) + "/" +
+                            df_display['PutShortStrike'].astype(str) +
+                            " C: $" + df_display['CallShortStrike'].astype(str) + "/" +
+                            df_display['CallLongStrike'].astype(str) +
                             " @ $" + df_display['NetCredit'].round(2).astype(str)
                         )
                     
@@ -3656,12 +3656,12 @@ with tabs[4]:
                         elif selected_strategy == "IRON_CONDOR":
                             st.write("**Put Spread:**")
                             col_p1, col_p2 = st.columns(2)
-                            col_p1.metric("Long Put", f"${selected['LongPut']:.2f}")
-                            col_p2.metric("Short Put", f"${selected['ShortPut']:.2f}")
+                            col_p1.metric("Long Put", f"${selected['PutLongStrike']:.2f}")
+                            col_p2.metric("Short Put", f"${selected['PutShortStrike']:.2f}")
                             st.write("**Call Spread:**")
                             col_c1, col_c2 = st.columns(2)
-                            col_c1.metric("Short Call", f"${selected['ShortCall']:.2f}")
-                            col_c2.metric("Long Call", f"${selected['LongCall']:.2f}")
+                            col_c1.metric("Short Call", f"${selected['CallShortStrike']:.2f}")
+                            col_c2.metric("Long Call", f"${selected['CallLongStrike']:.2f}")
                             st.metric("Net Credit", f"${selected['NetCredit']:.2f}")
                 
                 with col2:
@@ -3724,8 +3724,8 @@ with tabs[4]:
                 elif selected_strategy == "IRON_CONDOR":
                     col_a, col_b = st.columns(2)
                     col_a.write(f"**Action:** 4-LEG CREDIT SPREAD")
-                    put_width = selected['ShortPut'] - selected['LongPut']
-                    call_width = selected['LongCall'] - selected['ShortCall']
+                    put_width = selected['PutShortStrike'] - selected['PutLongStrike']
+                    call_width = selected['CallLongStrike'] - selected['CallShortStrike']
                     max_width = max(put_width, call_width)
                     col_b.write(f"**Max Risk:** ${(max_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
                     st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
@@ -3789,8 +3789,8 @@ with tabs[4]:
                                         # Cost of protective put minus call premium
                                         required = max(0, (selected.get('PutPremium', 0) - selected.get('CallPremium', 0)) * 100 * num_contracts)
                                     elif selected_strategy == "IRON_CONDOR":
-                                        put_width = selected['ShortPut'] - selected['LongPut']
-                                        call_width = selected['LongCall'] - selected['ShortCall']
+                                        put_width = selected['PutShortStrike'] - selected['PutLongStrike']
+                                        call_width = selected['CallLongStrike'] - selected['CallShortStrike']
                                         max_width = max(put_width, call_width)
                                         required = (max_width - selected['NetCredit']) * 100 * num_contracts
                                     
@@ -3876,10 +3876,10 @@ with tabs[4]:
                                         order = trader.create_iron_condor_order(
                                             symbol=selected['Ticker'],
                                             expiration=selected['Exp'],
-                                            long_put_strike=float(selected['LongPut']),
-                                            short_put_strike=float(selected['ShortPut']),
-                                            short_call_strike=float(selected['ShortCall']),
-                                            long_call_strike=float(selected['LongCall']),
+                                            long_put_strike=float(selected['PutLongStrike']),
+                                            short_put_strike=float(selected['PutShortStrike']),
+                                            short_call_strike=float(selected['CallShortStrike']),
+                                            long_call_strike=float(selected['CallLongStrike']),
                                             quantity=int(num_contracts),
                                             limit_price=float(limit_price),
                                             duration=order_duration
@@ -4001,10 +4001,10 @@ with tabs[4]:
                                 order = trader.create_iron_condor_order(
                                     symbol=selected['Ticker'],
                                     expiration=selected['Exp'],
-                                    long_put_strike=float(selected['LongPut']),
-                                    short_put_strike=float(selected['ShortPut']),
-                                    short_call_strike=float(selected['ShortCall']),
-                                    long_call_strike=float(selected['LongCall']),
+                                    long_put_strike=float(selected['PutLongStrike']),
+                                    short_put_strike=float(selected['PutShortStrike']),
+                                    short_call_strike=float(selected['CallShortStrike']),
+                                    long_call_strike=float(selected['CallLongStrike']),
                                     quantity=int(num_contracts),
                                     limit_price=float(limit_price),
                                     duration=order_duration
