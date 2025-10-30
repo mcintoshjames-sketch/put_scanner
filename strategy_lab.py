@@ -2039,6 +2039,47 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
             checks.append(
                 ("Δ target (put)", "⚠️", f"{pdelta:.2f} (pref −0.10..−0.15)"))
 
+    elif strategy == "IRON_CONDOR":
+        # Iron Condor specific checks
+        put_long_strike = float(_series_get(row, "PutLongStrike", float("nan")))
+        put_short_strike = float(_series_get(row, "PutShortStrike", float("nan")))
+        call_short_strike = float(_series_get(row, "CallShortStrike", float("nan")))
+        call_long_strike = float(_series_get(row, "CallLongStrike", float("nan")))
+        net_credit = float(_series_get(row, "NetCredit", float("nan")))
+        
+        # Check profit zone width (distance between short strikes)
+        if put_short_strike == put_short_strike and call_short_strike == call_short_strike:
+            profit_zone = call_short_strike - put_short_strike
+            zone_pct = (profit_zone / S) * 100.0 if S > 0 else 0.0
+            if zone_pct >= 10.0:
+                checks.append(("Profit zone width", "✅", f"${profit_zone:.0f} ({zone_pct:.1f}% of price)"))
+            elif zone_pct >= 5.0:
+                checks.append(("Profit zone width", "⚠️", f"${profit_zone:.0f} ({zone_pct:.1f}% of price, prefer ≥10%)"))
+            else:
+                checks.append(("Profit zone width", "❌", f"${profit_zone:.0f} ({zone_pct:.1f}% of price too narrow)"))
+        
+        # Check risk/reward ratio
+        if net_credit == net_credit and put_short_strike == put_short_strike and put_long_strike == put_long_strike:
+            put_spread_width = put_short_strike - put_long_strike
+            max_loss = put_spread_width - net_credit
+            max_profit = net_credit
+            risk_reward = max_profit / max_loss if max_loss > 0 else 0.0
+            if risk_reward >= 0.5:
+                checks.append(("Risk/reward ratio", "✅", f"{risk_reward:.2f} (profit ${max_profit:.2f} / risk ${max_loss:.2f})"))
+            elif risk_reward >= 0.33:
+                checks.append(("Risk/reward ratio", "⚠️", f"{risk_reward:.2f} (acceptable, prefer ≥0.5)"))
+            else:
+                checks.append(("Risk/reward ratio", "❌", f"{risk_reward:.2f} (poor, prefer ≥0.5)"))
+        
+        # Check balanced spreads (both spreads should be same width)
+        if all(x == x for x in [put_long_strike, put_short_strike, call_short_strike, call_long_strike]):
+            put_width = put_short_strike - put_long_strike
+            call_width = call_long_strike - call_short_strike
+            if abs(put_width - call_width) < 0.01:
+                checks.append(("Balanced spreads", "✅", f"Both ${put_width:.0f} wide"))
+            else:
+                checks.append(("Balanced spreads", "⚠️", f"Put ${put_width:.0f}, Call ${call_width:.0f} (unbalanced)"))
+
     df = pd.DataFrame(checks, columns=["Check", "Status", "Notes"])
     return df, flags
 
@@ -2147,6 +2188,66 @@ def build_runbook(strategy, row, *, contracts=1, capture_pct=0.70,
             "EXIT ORDERS:",
             f"• Profit‑take:  BTC  {contracts}  {ticker}  {exp}  {int(Kc)} CALL  (LIMIT),  STC  {contracts}  {ticker}  {exp}  {int(Kp)} PUT  (LIMIT)",
             "• Risk close‑out: same as above; add share exit if needed."
+        ]
+
+    elif strategy == "IRON_CONDOR":
+        Kpl = float(_series_get(row, "PutLongStrike"))
+        Kps = float(_series_get(row, "PutShortStrike"))
+        Kcs = float(_series_get(row, "CallShortStrike"))
+        Kcl = float(_series_get(row, "CallLongStrike"))
+        net_credit_ps = float(_series_get(row, "NetCredit"))
+        credit_pc = net_credit_ps * 100.0
+        
+        # Calculate max profit and max loss
+        put_spread_width = Kps - Kpl
+        call_spread_width = Kcl - Kcs
+        max_spread_width = max(put_spread_width, call_spread_width)
+        max_loss = (max_spread_width - net_credit_ps) * 100.0
+        max_profit = credit_pc
+        
+        # Breakeven points
+        be_lower = Kps - net_credit_ps
+        be_upper = Kcs + net_credit_ps
+        
+        # Profit capture target
+        tgt_close_ps = max(0.05, net_credit_ps * (1.0 - capture_pct))
+        
+        lines += [
+            f"# RUNBOOK — IRON CONDOR ({ticker})",
+            hr,
+            "ENTRY (4-leg order):",
+            f"• Buy to Open   {contracts}  {ticker}  {exp}  {int(Kpl)} PUT   (long put - downside protection)",
+            f"• Sell to Open  {contracts}  {ticker}  {exp}  {int(Kps)} PUT   (short put - collect premium)",
+            f"• Sell to Open  {contracts}  {ticker}  {exp}  {int(Kcs)} CALL  (short call - collect premium)",
+            f"• Buy to Open   {contracts}  {ticker}  {exp}  {int(Kcl)} CALL  (long call - upside protection)",
+            f"  Order: NET CREDIT, ≥ {_fmt_usd(net_credit_ps)} per share (≥ {_fmt_usd(credit_pc)} per contract), GTC",
+            f"  Capital required: {_fmt_usd(max_loss * contracts, 0)}",
+            f"  Max profit: {_fmt_usd(max_profit * contracts, 0)} (if {ticker} stays between {_fmt_usd(Kps)} and {_fmt_usd(Kcs)})",
+            f"  Max loss: {_fmt_usd(max_loss * contracts, 0)} (if {ticker} moves beyond wings)",
+            f"  Breakevens: {_fmt_usd(be_lower)} (lower) and {_fmt_usd(be_upper)} (upper)",
+            "",
+            "PROFIT‑TAKING TRIGGER(S):",
+            f"• Close when total spread mark ≤ {_fmt_usd(tgt_close_ps)} per share  (≈ {int(capture_pct*100)}% credit captured), OR",
+            "• Close/roll at ~7–10 DTE if ≥50% credit captured, OR",
+            "• Close at ~21 DTE if ≥75% credit captured.",
+            "",
+            "RISK CLOSE‑OUT TRIGGER(S):",
+            f"• Price approaches short strikes: ≤ {_fmt_usd(Kps + 2)} (put side) or ≥ {_fmt_usd(Kcs - 2)} (call side)",
+            f"• Price breaches breakevens: ≤ {_fmt_usd(be_lower)} or ≥ {_fmt_usd(be_upper)}",
+            "• Total P&L reaches 2× max profit (close to avoid further losses)",
+            "• Consider rolling threatened side: close losing spread, open new one further out",
+            "",
+            "EXIT ORDERS (close all 4 legs):",
+            f"• Profit‑take:  Close entire spread for NET DEBIT ≤ {_fmt_usd(tgt_close_ps)} per share, GTC",
+            f"  - STC  {contracts}  {ticker}  {exp}  {int(Kpl)} PUT",
+            f"  - BTC  {contracts}  {ticker}  {exp}  {int(Kps)} PUT",
+            f"  - BTC  {contracts}  {ticker}  {exp}  {int(Kcs)} CALL",
+            f"  - STC  {contracts}  {ticker}  {exp}  {int(Kcl)} CALL",
+            "• Risk close‑out: Close at market or use STOP‑LIMIT for full spread.",
+            "",
+            "ADJUSTMENTS (if one side threatened):",
+            "• Roll threatened spread: close losing spread, open new spread at better strikes/later expiry",
+            "• Convert to vertical spread: close unthreatened side, manage remaining spread"
         ]
 
     return "\n".join(lines)
