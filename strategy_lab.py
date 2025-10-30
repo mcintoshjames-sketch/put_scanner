@@ -4747,6 +4747,10 @@ with tabs[6]:
                     available_strategies.append("Collar")
                 if not df_iron_condor.empty:
                     available_strategies.append("Iron Condor")
+                if not df_bull_put_spread.empty:
+                    available_strategies.append("Bull Put Spread")
+                if not df_bear_call_spread.empty:
+                    available_strategies.append("Bear Call Spread")
                 
                 if not available_strategies:
                     st.warning("⚠️ No scan results available. Run a scan first.")
@@ -4756,7 +4760,9 @@ with tabs[6]:
                         "Cash-Secured Put": ("CSP", df_csp),
                         "Covered Call": ("CC", df_cc),
                         "Collar": ("COLLAR", df_collar),
-                        "Iron Condor": ("IRON_CONDOR", df_iron_condor)
+                        "Iron Condor": ("IRON_CONDOR", df_iron_condor),
+                        "Bull Put Spread": ("BULL_PUT_SPREAD", df_bull_put_spread),
+                        "Bear Call Spread": ("BEAR_CALL_SPREAD", df_bear_call_spread)
                     }
                     
                     selected_strategy_name = st.selectbox(
@@ -4777,6 +4783,10 @@ with tabs[6]:
                     st.info("💡 **Collar**: Sell call + buy put for downside protection, limited upside")
                 elif selected_strategy == "IRON_CONDOR":
                     st.info("💡 **Iron Condor**: Sell put spread + call spread, profit if price stays in range")
+                elif selected_strategy == "BULL_PUT_SPREAD":
+                    st.info("💡 **Bull Put Spread**: Sell higher strike put + buy lower strike put = NET CREDIT | Defined risk, 5-10x more efficient than CSP")
+                elif selected_strategy == "BEAR_CALL_SPREAD":
+                    st.info("💡 **Bear Call Spread**: Sell lower strike call + buy higher strike call = NET CREDIT | Defined risk, no stock ownership required")
             
             # Select a contract from the results
             if selected_strategy and not strategy_df.empty:
@@ -4817,6 +4827,22 @@ with tabs[6]:
                             df_display['PutShortStrike'].astype(str) +
                             " C: $" + df_display['CallShortStrike'].astype(str) + "/" +
                             df_display['CallLongStrike'].astype(str) +
+                            " @ $" + df_display['NetCredit'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "BULL_PUT_SPREAD":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " Sell $" + df_display['SellStrike'].astype(str) +
+                            " / Buy $" + df_display['BuyStrike'].astype(str) + " PUT" +
+                            " @ $" + df_display['NetCredit'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " Sell $" + df_display['SellStrike'].astype(str) +
+                            " / Buy $" + df_display['BuyStrike'].astype(str) + " CALL" +
                             " @ $" + df_display['NetCredit'].round(2).astype(str)
                         )
                     
@@ -4868,6 +4894,22 @@ with tabs[6]:
                             col_c1.metric("Short Call", f"${selected['CallShortStrike']:.2f}")
                             col_c2.metric("Long Call", f"${selected['CallLongStrike']:.2f}")
                             st.metric("Net Credit", f"${selected['NetCredit']:.2f}")
+                        elif selected_strategy == "BULL_PUT_SPREAD":
+                            st.write("**Bull Put Spread (2-leg):**")
+                            col_s1, col_s2 = st.columns(2)
+                            col_s1.metric("Sell Put", f"${selected['SellStrike']:.2f}")
+                            col_s2.metric("Buy Put", f"${selected['BuyStrike']:.2f}")
+                            col_c1, col_c2 = st.columns(2)
+                            col_c1.metric("Net Credit", f"${selected['NetCredit']:.2f}")
+                            col_c2.metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                        elif selected_strategy == "BEAR_CALL_SPREAD":
+                            st.write("**Bear Call Spread (2-leg):**")
+                            col_s1, col_s2 = st.columns(2)
+                            col_s1.metric("Sell Call", f"${selected['SellStrike']:.2f}")
+                            col_s2.metric("Buy Call", f"${selected['BuyStrike']:.2f}")
+                            col_c1, col_c2 = st.columns(2)
+                            col_c1.metric("Net Credit", f"${selected['NetCredit']:.2f}")
+                            col_c2.metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
                 
                 with col2:
                     st.write("**Order Settings:**")
@@ -4897,7 +4939,7 @@ with tabs[6]:
                             format="%.2f",
                             help="Maximum price you're willing to receive"
                         )
-                    elif selected_strategy in ["COLLAR", "IRON_CONDOR"]:
+                    elif selected_strategy in ["COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
                         limit_price = st.number_input(
                             "Limit Price (Net Credit)",
                             min_value=0.01,
@@ -4933,6 +4975,18 @@ with tabs[6]:
                     call_width = selected['CallLongStrike'] - selected['CallShortStrike']
                     max_width = max(put_width, call_width)
                     col_b.write(f"**Max Risk:** ${(max_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
+                    st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "BULL_PUT_SPREAD":
+                    col_a, col_b = st.columns(2)
+                    col_a.write(f"**Action:** 2-LEG CREDIT SPREAD (Bull Put)")
+                    spread_width = selected['SellStrike'] - selected['BuyStrike']
+                    col_b.write(f"**Max Risk:** ${(spread_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
+                    st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "BEAR_CALL_SPREAD":
+                    col_a, col_b = st.columns(2)
+                    col_a.write(f"**Action:** 2-LEG CREDIT SPREAD (Bear Call)")
+                    spread_width = selected['BuyStrike'] - selected['SellStrike']
+                    col_b.write(f"**Max Risk:** ${(spread_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
                     st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
                 
                 # Earnings Safety Check
@@ -4998,6 +5052,12 @@ with tabs[6]:
                                         call_width = selected['CallLongStrike'] - selected['CallShortStrike']
                                         max_width = max(put_width, call_width)
                                         required = (max_width - selected['NetCredit']) * 100 * num_contracts
+                                    elif selected_strategy == "BULL_PUT_SPREAD":
+                                        spread_width = selected['SellStrike'] - selected['BuyStrike']
+                                        required = (spread_width - selected['NetCredit']) * 100 * num_contracts
+                                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                                        spread_width = selected['BuyStrike'] - selected['SellStrike']
+                                        required = (spread_width - selected['NetCredit']) * 100 * num_contracts
                                     
                                     with st.spinner("Checking account..."):
                                         result = trader.check_buying_power(required)
