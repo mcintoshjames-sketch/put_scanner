@@ -6175,7 +6175,8 @@ with tabs[9]:
         st.info("Select a strategy/contract above and ensure scans have results.")
     else:
         base = {"CSP": df_csp, "CC": df_cc,
-                "COLLAR": df_collar, "IRON_CONDOR": df_iron_condor}[strat_choice_rb]
+                "COLLAR": df_collar, "IRON_CONDOR": df_iron_condor,
+                "BULL_PUT_SPREAD": df_bull_put_spread, "BEAR_CALL_SPREAD": df_bear_call_spread}[strat_choice_rb]
 
         # Inputs for checks
         thresholds = dict(
