@@ -4276,7 +4276,7 @@ with tabs[4]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=exit_price,
-                                            duration=order_duration
+                                            duration="GTC"
                                         )
                                         exit_metadata = {
                                             **metadata,
@@ -4301,7 +4301,7 @@ with tabs[4]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=exit_price,
-                                            duration=order_duration
+                                            duration="GTC"
                                         )
                                         exit_metadata = {
                                             **metadata,
@@ -4327,7 +4327,7 @@ with tabs[4]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=call_exit,
-                                            duration=order_duration
+                                            duration="GTC"
                                         )
                                         
                                         # Create exit for put (SELL TO CLOSE)
@@ -4343,7 +4343,7 @@ with tabs[4]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=put_exit,
-                                            duration=order_duration
+                                            duration="GTC"
                                         )
                                         
                                         exit_metadata_call = {
@@ -4380,7 +4380,7 @@ with tabs[4]:
                                             long_call_strike=float(selected['CallLongStrike']),
                                             quantity=int(num_contracts),
                                             limit_price=exit_debit,
-                                            duration=order_duration
+                                            duration="GTC"
                                         )
                                         exit_metadata = {
                                             **metadata,
