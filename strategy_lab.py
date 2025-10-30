@@ -1417,6 +1417,300 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
     return df
 
 
+def analyze_iron_condor(ticker, *, min_days=0, days_limit, min_oi, max_spread,
+                        min_roi, min_cushion, earn_window, risk_free,
+                        spread_width_put=5.0, spread_width_call=5.0,
+                        target_delta_short=0.16, bill_yield=0.0):
+    """
+    Scan for Iron Condor opportunities (sell OTM put spread + sell OTM call spread).
+    
+    Structure:
+    - Sell put at strike Kps (short put)
+    - Buy put at strike Kpl (long put, Kpl < Kps)
+    - Sell call at strike Kcs (short call)
+    - Buy call at strike Kcl (long call, Kcl > Kcs)
+    
+    Returns DataFrame with ranked Iron Condor opportunities.
+    """
+    stock = yf.Ticker(ticker)
+    try:
+        S = fetch_price(ticker)
+    except Exception:
+        return pd.DataFrame()
+
+    expirations = fetch_expirations(ticker)
+    earn_date = get_earnings_date(stock)
+    div_ps_annual, div_y = trailing_dividend_info(stock, S)
+    
+    rows = []
+    
+    for exp in expirations:
+        try:
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        D = (ed - datetime.now(timezone.utc).date()).days
+        if D < int(min_days) or D > int(days_limit):
+            continue
+        if earn_date is not None and abs((earn_date - ed).days) <= int(earn_window):
+            continue
+
+        T = D / 365.0
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        
+        if "type" in chain_all.columns:
+            calls = chain_all[chain_all["type"].str.lower() == "call"].copy()
+            puts = chain_all[chain_all["type"].str.lower() == "put"].copy()
+        else:
+            calls = chain_all.copy()
+            puts = chain_all.copy()
+        
+        # Find short put (sell) - target delta around -0.16 (84% POEW)
+        puts_sell = []
+        for _, r in puts.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "k", "K"], float("nan"))
+            if not (K == K and K > 0 and K < S):  # OTM puts
+                continue
+            
+            iv = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], 0.20)
+            if iv == iv and iv > 3.0:
+                iv = iv / 100.0
+            
+            pd_val = put_delta(S, K, risk_free, iv, T, div_y)
+            bid = _get_num_from_row(r, ["bid", "Bid", "b"])
+            ask = _get_num_from_row(r, ["ask", "Ask", "a"])
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
+            prem = effective_credit(bid, ask, last)
+            
+            if prem != prem or prem <= 0:
+                continue
+            
+            oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            spread_pct = compute_spread_pct(bid, ask, prem)
+            
+            puts_sell.append({
+                "K": K, "prem": prem, "delta": pd_val, "iv": iv,
+                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+            })
+        
+        # Find short call (sell) - target delta around +0.16 (84% POEW)
+        calls_sell = []
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "k", "K"], float("nan"))
+            if not (K == K and K > 0 and K > S):  # OTM calls
+                continue
+            
+            iv = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], 0.20)
+            if iv == iv and iv > 3.0:
+                iv = iv / 100.0
+            
+            cd_val = call_delta(S, K, risk_free, iv, T, div_y)
+            bid = _get_num_from_row(r, ["bid", "Bid", "b"])
+            ask = _get_num_from_row(r, ["ask", "Ask", "a"])
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
+            prem = effective_credit(bid, ask, last)
+            
+            if prem != prem or prem <= 0:
+                continue
+            
+            oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            spread_pct = compute_spread_pct(bid, ask, prem)
+            
+            calls_sell.append({
+                "K": K, "prem": prem, "delta": cd_val, "iv": iv,
+                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+            })
+        
+        if not puts_sell or not calls_sell:
+            continue
+        
+        # Find best short put (closest to target delta)
+        ps_df = pd.DataFrame(puts_sell)
+        ps_df = ps_df[ps_df["oi"] >= min_oi]
+        if ps_df.empty:
+            continue
+        ps_df["delta_diff"] = (ps_df["delta"] + target_delta_short).abs()
+        ps_row = ps_df.sort_values("delta_diff").iloc[0]
+        
+        # Find best short call (closest to target delta)
+        cs_df = pd.DataFrame(calls_sell)
+        cs_df = cs_df[cs_df["oi"] >= min_oi]
+        if cs_df.empty:
+            continue
+        cs_df["delta_diff"] = (cs_df["delta"] - target_delta_short).abs()
+        cs_row = cs_df.sort_values("delta_diff").iloc[0]
+        
+        # Check spreads
+        if (ps_row["spread%"] is not None and ps_row["spread%"] > max_spread):
+            continue
+        if (cs_row["spread%"] is not None and cs_row["spread%"] > max_spread):
+            continue
+        
+        # Find long put (buy) - fixed width below short put
+        Kps = float(ps_row["K"])
+        Kpl = Kps - spread_width_put
+        
+        # Find long call (buy) - fixed width above short call
+        Kcs = float(cs_row["K"])
+        Kcl = Kcs + spread_width_call
+        
+        # Get premiums for long legs
+        put_long = puts[puts.apply(lambda r: abs(_get_num_from_row(r, ["strike", "Strike", "k", "K"], 0) - Kpl) < 0.5, axis=1)]
+        call_long = calls[calls.apply(lambda r: abs(_get_num_from_row(r, ["strike", "Strike", "k", "K"], 0) - Kcl) < 0.5, axis=1)]
+        
+        if put_long.empty or call_long.empty:
+            continue
+        
+        # Get long put premium (debit)
+        pl_row = put_long.iloc[0]
+        pl_bid = _get_num_from_row(pl_row, ["bid", "Bid", "b"])
+        pl_ask = _get_num_from_row(pl_row, ["ask", "Ask", "a"])
+        pl_last = _get_num_from_row(pl_row, ["lastPrice", "last", "mark", "mid"])
+        pl_prem = effective_debit(pl_bid, pl_ask, pl_last)
+        pl_oi = _safe_int(_get_num_from_row(pl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+        
+        # Get long call premium (debit)
+        cl_row = call_long.iloc[0]
+        cl_bid = _get_num_from_row(cl_row, ["bid", "Bid", "b"])
+        cl_ask = _get_num_from_row(cl_row, ["ask", "Ask", "a"])
+        cl_last = _get_num_from_row(cl_row, ["lastPrice", "last", "mark", "mid"])
+        cl_prem = effective_debit(cl_bid, cl_ask, cl_last)
+        cl_oi = _safe_int(_get_num_from_row(cl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+        
+        if pl_prem != pl_prem or pl_prem <= 0 or cl_prem != cl_prem or cl_prem <= 0:
+            continue
+        
+        # Check long legs OI
+        if pl_oi < min_oi or cl_oi < min_oi:
+            continue
+        
+        # Calculate net credit
+        put_spread_credit = float(ps_row["prem"]) - pl_prem
+        call_spread_credit = float(cs_row["prem"]) - cl_prem
+        net_credit = put_spread_credit + call_spread_credit
+        
+        if net_credit <= 0:
+            continue
+        
+        # Calculate max loss (width of widest spread - net credit)
+        put_spread_width = Kps - Kpl
+        call_spread_width = Kcl - Kcs
+        max_spread_width = max(put_spread_width, call_spread_width)
+        max_loss = max_spread_width - net_credit
+        
+        # Capital at risk = max loss
+        capital = max_loss * 100.0
+        
+        # ROI calculations
+        roi_cycle = net_credit / max_loss if max_loss > 0 else 0.0
+        roi_ann = roi_cycle * (365.0 / D)
+        excess_vs_bills = roi_ann - float(bill_yield)
+        
+        if roi_ann < float(min_roi):
+            continue
+        
+        # Cushion calculations
+        iv_avg = (float(ps_row["iv"]) + float(cs_row["iv"])) / 2.0
+        exp_mv = expected_move(S, iv_avg, T)
+        
+        put_cushion = (S - Kps) / exp_mv if exp_mv > 0 else float("nan")
+        call_cushion = (Kcs - S) / exp_mv if exp_mv > 0 else float("nan")
+        
+        if put_cushion == put_cushion and put_cushion < float(min_cushion):
+            continue
+        if call_cushion == call_cushion and call_cushion < float(min_cushion):
+            continue
+        
+        # Breakeven points
+        breakeven_lower = Kps - net_credit
+        breakeven_upper = Kcs + net_credit
+        
+        # Probability of max profit (both spreads expire worthless)
+        # This is approximate: POEW_put * POEW_call
+        d1_p, d2_p = _bs_d1_d2(S, Kps, risk_free, iv_avg, T, div_y)
+        d1_c, d2_c = _bs_d1_d2(S, Kcs, risk_free, iv_avg, T, div_y)
+        poew_put = _norm_cdf(d2_p) if d2_p == d2_p else float("nan")
+        poew_call = _norm_cdf(-d2_c) if d2_c == d2_c else float("nan")
+        prob_max_profit = poew_put * poew_call if (poew_put == poew_put and poew_call == poew_call) else float("nan")
+        
+        # Scoring: optimize for credit/risk ratio, cushion, and liquidity
+        # Iron Condor scoring emphasizes:
+        # - High ROI (40%): credit / max_loss ratio
+        # - Balanced wings (30%): equal cushion on both sides
+        # - Low probability of touching (20%): min(put_cushion, call_cushion)
+        # - Liquidity (10%): avg spread across 4 legs
+        
+        avg_spread = (ps_row["spread%"] or 20.0 + cs_row["spread%"] or 20.0) / 2.0
+        liq_score = max(0.0, 1.0 - avg_spread / 20.0)
+        
+        min_cushion_val = min(put_cushion, call_cushion) if (put_cushion == put_cushion and call_cushion == call_cushion) else 0.0
+        cushion_score = min(min_cushion_val / 3.0, 1.0)  # normalize to 3 sigma
+        
+        # Balance score: penalize if one wing much farther than other
+        if put_cushion == put_cushion and call_cushion == call_cushion:
+            balance_ratio = min(put_cushion, call_cushion) / max(put_cushion, call_cushion, 1e-9)
+            balance_score = balance_ratio  # 1.0 = perfect balance, <1.0 = imbalanced
+        else:
+            balance_score = 0.0
+        
+        score = (0.40 * roi_ann +
+                 0.30 * balance_score +
+                 0.20 * cushion_score +
+                 0.10 * liq_score)
+        
+        rows.append({
+            "Strategy": "IRON_CONDOR",
+            "Ticker": ticker,
+            "Price": round(S, 2),
+            "Exp": exp,
+            "Days": D,
+            
+            # Put spread (sell Kps, buy Kpl)
+            "PutShortStrike": float(Kps),
+            "PutLongStrike": float(Kpl),
+            "PutSpreadCredit": round(put_spread_credit, 2),
+            "PutShortΔ": round(float(ps_row["delta"]), 3),
+            
+            # Call spread (sell Kcs, buy Kcl)
+            "CallShortStrike": float(Kcs),
+            "CallLongStrike": float(Kcl),
+            "CallSpreadCredit": round(call_spread_credit, 2),
+            "CallShortΔ": round(float(cs_row["delta"]), 3),
+            
+            # Overall metrics
+            "NetCredit": round(net_credit, 2),
+            "MaxLoss": round(max_loss, 2),
+            "Capital": round(capital, 2),
+            
+            "ROI%_ann": round(roi_ann * 100.0, 2),
+            "ROI%_excess_bills": round(excess_vs_bills * 100.0, 2),
+            
+            "BreakevenLower": round(breakeven_lower, 2),
+            "BreakevenUpper": round(breakeven_upper, 2),
+            "Range": round(breakeven_upper - breakeven_lower, 2),
+            
+            "PutCushionσ": round(put_cushion, 2) if put_cushion == put_cushion else float("nan"),
+            "CallCushionσ": round(call_cushion, 2) if call_cushion == call_cushion else float("nan"),
+            
+            "ProbMaxProfit": round(prob_max_profit, 3) if prob_max_profit == prob_max_profit else float("nan"),
+            
+            "PutSpread%": round(float(ps_row["spread%"]), 2) if ps_row["spread%"] is not None else float("nan"),
+            "CallSpread%": round(float(cs_row["spread%"]), 2) if cs_row["spread%"] is not None else float("nan"),
+            "PutShortOI": int(ps_row["oi"]),
+            "CallShortOI": int(cs_row["oi"]),
+            
+            "IV": round(iv_avg * 100.0, 2),
+            "Score": round(score, 6)
+        })
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]).reset_index(drop=True)
+    return df
+
+
 # -------------------------- Best Practices -----------------------
 
 def best_practices(strategy):
@@ -1444,6 +1738,17 @@ def best_practices(strategy):
             "Liquidity: OI & spreads on **both legs**; avoid expiries with thin puts.",
             "Risk: Downside **floor ≈ (K_put − S) + net credit**; upside **capped near K_call**.",
             "Exit: roll the **short call** when Δ > ~0.40; roll the **put** if floor drifts too low vs. risk tolerance.",
+        ]
+    if strategy == "IRON_CONDOR":
+        return [
+            "Structure: Sell **OTM put spread** + Sell **OTM call spread** (neutral income, defined risk).",
+            "Tenor: **30–45 DTE** to capture theta decay while avoiding gamma risk near expiry.",
+            "Strike selection: Short strikes **Δ ~ ±0.15–0.25** (84–75% POEW); wing width **$5–10** or **5–10% OTM**.",
+            "Liquidity: **All 4 legs need OI ≥ 200** and **bid-ask ≤ 10%**; prefer liquid underlyings.",
+            "Risk: Max loss = **wing width − net credit**; ideal **credit/max_loss ≥ 25–35%**.",
+            "Balance: Target **symmetric wings** (equal cushion on both sides) for neutral outlook.",
+            "Exit: Take profit at **50–75% of max credit**; close early if one side Δ > ~0.35 or breached.",
+            "Avoid earnings and high-IV events that can cause gap risk through breakevens.",
         ]
     return []
 
@@ -2160,7 +2465,7 @@ if "USE_POLYGON" in globals() and USE_POLYGON and "POLY" in globals() and POLY i
 st.title("📊 Options Income Strategy Lab — CSP vs Covered Call vs Collar")
 
 # Initialize session state
-for key in ["df_csp", "df_cc", "df_collar"]:
+for key in ["df_csp", "df_cc", "df_collar", "df_iron_condor"]:
     if key not in st.session_state:
         st.session_state[key] = pd.DataFrame()
 
@@ -2445,6 +2750,23 @@ with st.sidebar:
     min_net_credit = st.number_input(
         "Min net credit ($/sh, Collar, optional)", value=0.0, step=0.05, key="min_net_credit_input")
 
+    st.subheader("Iron Condor")
+    ic_target_delta = st.slider(
+        "Short Strike Target Δ (abs)", 0.10, 0.30, 0.16, step=0.01, key="ic_target_delta",
+        help="Target delta for short strikes (~0.16 = 84% POEW)")
+    ic_spread_width_put = st.number_input(
+        "Put Spread Width ($)", value=5.0, step=1.0, key="ic_spread_width_put",
+        help="Distance between short and long put strikes")
+    ic_spread_width_call = st.number_input(
+        "Call Spread Width ($)", value=5.0, step=1.0, key="ic_spread_width_call",
+        help="Distance between short and long call strikes")
+    ic_min_roi = st.number_input(
+        "Min ROI % (annualized, Iron Condor)", value=15.0, step=1.0, key="ic_min_roi_input",
+        help="Minimum annualized return on risk")
+    ic_min_cushion = st.number_input(
+        "Min Cushion (σ, Iron Condor)", value=0.5, step=0.1, key="ic_min_cushion_input",
+        help="Minimum cushion in standard deviations for both wings")
+
     st.divider()
     run_btn = st.button("🔎 Scan Strategies")
 
@@ -2452,16 +2774,17 @@ with st.sidebar:
 @st.cache_data(show_spinner=True, ttl=120)
 def run_scans(tickers, params):
     """
-    Run CSP, CC, and Collar scans in parallel across tickers.
+    Run CSP, CC, Collar, and Iron Condor scans in parallel across tickers.
     Uses ThreadPoolExecutor for concurrent processing.
     """
     # Handle empty ticker list
     if not tickers or len(tickers) == 0:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
 
     csp_all = []
     cc_all = []
     col_all = []
+    ic_all = []
     scan_counters = {"CSP": {}}
 
     def scan_ticker(t):
@@ -2514,7 +2837,24 @@ def run_scans(tickers, params):
             bill_yield=params["bill_yield"]
         )
 
-        return csp, csp_cnt, cc, col
+        # Iron Condor scan
+        ic = analyze_iron_condor(
+            t,
+            min_days=params["min_days"],
+            days_limit=params["days_limit"],
+            min_oi=params["min_oi"],
+            max_spread=params["max_spread"],
+            min_roi=params["ic_min_roi"] / 100.0,
+            min_cushion=params["ic_min_cushion"],
+            earn_window=params["earn_window"],
+            risk_free=params["risk_free"],
+            spread_width_put=params["ic_spread_width_put"],
+            spread_width_call=params["ic_spread_width_call"],
+            target_delta_short=params["ic_target_delta"],
+            bill_yield=params["bill_yield"]
+        )
+
+        return csp, csp_cnt, cc, col, ic
 
     # Parallel execution with ThreadPoolExecutor
     max_workers = min(len(tickers), 8)  # Cap at 8 concurrent workers
@@ -2528,7 +2868,7 @@ def run_scans(tickers, params):
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
-                csp, csp_cnt, cc, col = future.result()
+                csp, csp_cnt, cc, col, ic = future.result()
 
                 # Accumulate results
                 if not csp.empty:
@@ -2537,6 +2877,8 @@ def run_scans(tickers, params):
                     cc_all.append(cc)
                 if not col.empty:
                     col_all.append(col)
+                if not ic.empty:
+                    ic_all.append(ic)
 
                 # Aggregate counters
                 for k, v in csp_cnt.items():
@@ -2555,8 +2897,10 @@ def run_scans(tickers, params):
     df_cc = pd.concat(cc_all, ignore_index=True) if cc_all else pd.DataFrame()
     df_col = pd.concat(
         col_all, ignore_index=True) if col_all else pd.DataFrame()
+    df_ic = pd.concat(
+        ic_all, ignore_index=True) if ic_all else pd.DataFrame()
 
-    return df_csp, df_cc, df_col, scan_counters
+    return df_csp, df_cc, df_col, df_ic, scan_counters
 
 
 # Run scans
@@ -2575,6 +2919,11 @@ if run_btn:
             include_div_cc=bool(include_div_cc),
             call_delta_tgt=float(call_delta_tgt), put_delta_tgt=float(put_delta_tgt),
             include_div_col=bool(include_div_col), min_net_credit=float(min_net_credit),
+            ic_target_delta=float(ic_target_delta),
+            ic_spread_width_put=float(ic_spread_width_put),
+            ic_spread_width_call=float(ic_spread_width_call),
+            ic_min_roi=float(ic_min_roi),
+            ic_min_cushion=float(ic_min_cushion),
             min_oi=int(min_oi), max_spread=float(max_spread),
             earn_window=int(earn_window), risk_free=float(risk_free),
             per_contract_cap=per_contract_cap,
@@ -2582,18 +2931,19 @@ if run_btn:
         )
         try:
             with st.spinner("Scanning..."):
-                df_csp, df_cc, df_collar, scan_counters = run_scans(
+                df_csp, df_cc, df_collar, df_iron_condor, scan_counters = run_scans(
                     tickers, opts)
             st.session_state["df_csp"] = df_csp
             st.session_state["df_cc"] = df_cc
             st.session_state["df_collar"] = df_collar
+            st.session_state["df_iron_condor"] = df_iron_condor
             st.session_state["scan_counters"] = scan_counters
 
             # Show results summary
-            total_results = len(df_csp) + len(df_cc) + len(df_collar)
+            total_results = len(df_csp) + len(df_cc) + len(df_collar) + len(df_iron_condor)
             if total_results > 0:
                 st.success(
-                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar opportunities")
+                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar, {len(df_iron_condor)} Iron Condor opportunities")
             else:
                 st.warning(
                     "No opportunities found with current filters. Try loosening your criteria.")
@@ -2650,12 +3000,13 @@ if run_btn:
 df_csp = st.session_state["df_csp"]
 df_cc = st.session_state["df_cc"]
 df_collar = st.session_state["df_collar"]
+df_iron_condor = st.session_state["df_iron_condor"]
 
 # --- Universal Contract / Structure Picker (applies to all tabs) ---
 st.subheader("Selection — applies to Risk, Runbook, and Stress tabs")
 
 # Determine available strategies based on scan results
-_available = [("CSP", df_csp), ("CC", df_cc), ("COLLAR", df_collar)]
+_available = [("CSP", df_csp), ("CC", df_cc), ("COLLAR", df_collar), ("IRON_CONDOR", df_iron_condor)]
 available_strats = [name for name, df in _available if not df.empty]
 if "sel_strategy" not in st.session_state:
     st.session_state["sel_strategy"] = (
@@ -2664,8 +3015,8 @@ if "sel_strategy" not in st.session_state:
 # Strategy picker (single source of truth)
 sel_strategy = st.selectbox(
     "Strategy",
-    ["CSP", "CC", "COLLAR"],
-    index=["CSP", "CC", "COLLAR"].index(st.session_state["sel_strategy"]),
+    ["CSP", "CC", "COLLAR", "IRON_CONDOR"],
+    index=["CSP", "CC", "COLLAR", "IRON_CONDOR"].index(st.session_state["sel_strategy"]),
     key="sel_strategy",
 )
 
@@ -2685,14 +3036,23 @@ def _keys_for(strategy: str) -> pd.Series:
             df["Ticker"] + " | " + df["Exp"] +
             " | K=" + df["Strike"].astype(str)
         ) if not df.empty else pd.Series([], dtype=str)
-    # COLLAR
-    df = df_collar
+    if strategy == "COLLAR":
+        df = df_collar
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"]
+            + " | Kc=" + df["CallStrike"].astype(str)
+            + " | Kp=" + df["PutStrike"].astype(str)
+        )
+    # IRON_CONDOR
+    df = df_iron_condor
     if df.empty:
         return pd.Series([], dtype=str)
     return (
         df["Ticker"] + " | " + df["Exp"]
-        + " | Kc=" + df["CallStrike"].astype(str)
-        + " | Kp=" + df["PutStrike"].astype(str)
+        + " | CS=" + df["CallShortStrike"].astype(str)
+        + " | PS=" + df["PutShortStrike"].astype(str)
     )
 
 
@@ -2730,13 +3090,20 @@ def _get_selected_row():
         df = df_cc
         ks = (df["Ticker"] + " | " + df["Exp"] + " | K=" +
               df["Strike"].astype(str)) if not df.empty else pd.Series([], dtype=str)
-    else:
+    elif strat == "COLLAR":
         df = df_collar
         if df.empty:
             return strat, None
         ks = (df["Ticker"] + " | " + df["Exp"]
               + " | Kc=" + df["CallStrike"].astype(str)
               + " | Kp=" + df["PutStrike"].astype(str))
+    else:  # IRON_CONDOR
+        df = df_iron_condor
+        if df.empty:
+            return strat, None
+        ks = (df["Ticker"] + " | " + df["Exp"]
+              + " | CS=" + df["CallShortStrike"].astype(str)
+              + " | PS=" + df["PutShortStrike"].astype(str))
     if df.empty:
         return strat, None
     sel = df[ks == key]
@@ -2804,7 +3171,7 @@ def _get_selected_row():
 # st.divider()
 
 tabs = st.tabs([
-    "Cash‑Secured Puts", "Covered Calls", "Collars",
+    "Cash‑Secured Puts", "Covered Calls", "Collars", "Iron Condor",
     "Compare", "Risk (Monte Carlo)", "Playbook",
     "Plan & Runbook", "Stress Test", "Overview", "Roll Analysis"
 ])
@@ -3340,10 +3707,34 @@ with tabs[2]:
         st.dataframe(df_collar[show_cols],
                      use_container_width=True, height=520)
 
-# --- Tab 4: Compare ---
+# --- Tab 3: Iron Condor ---
 with tabs[3]:
+    st.header("Iron Condor (Sell Put Spread + Sell Call Spread)")
+    if df_iron_condor.empty:
+        st.info("Run a scan or loosen Iron Condor settings.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
+                     "PutShortStrike", "PutLongStrike", "PutSpreadCredit", "PutShortΔ",
+                     "CallShortStrike", "CallLongStrike", "CallSpreadCredit", "CallShortΔ",
+                     "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills",
+                     "BreakevenLower", "BreakevenUpper", "Range",
+                     "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
+                     "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "Score"]
+        show_cols = [c for c in show_cols if c in df_iron_condor.columns]
+        st.dataframe(df_iron_condor[show_cols],
+                     use_container_width=True, height=520)
+        
+        st.caption(
+            "**PutShortΔ/CallShortΔ**: Delta of short strikes (target ~±0.16 = 84% POEW) | "
+            "**MaxLoss**: Wing width − net credit | "
+            "**ROI%_ann**: (Net credit / Max loss) × (365 / Days) × 100 | "
+            "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
+        )
+
+# --- Tab 4: Compare ---
+with tabs[4]:
     st.header("Compare Projected Annualized ROIs (mid-price based)")
-    if df_csp.empty and df_cc.empty and df_collar.empty:
+    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty:
         st.info("No results yet. Run a scan.")
     else:
         pieces = []
@@ -3368,6 +3759,14 @@ with tabs[3]:
                 " | K=" + tmp["Strike"].astype(str)
             tmp["Strategy"] = "COLLAR"
             pieces.append(tmp)
+        if not df_iron_condor.empty:
+            tmp = df_iron_condor[["Strategy", "Ticker", "Exp", "Days", "CallShortStrike",
+                                   "PutShortStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
+            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
+            pieces.append(tmp)
 
         cmp_df = pd.concat(
             pieces, ignore_index=True) if pieces else pd.DataFrame()
@@ -3378,7 +3777,7 @@ with tabs[3]:
                          use_container_width=True, height=520)
 
 # --- Tab 5: Risk (Monte Carlo) ---
-with tabs[4]:
+with tabs[5]:
     st.header("Risk (Monte Carlo) — Uses the global selection above")
     st.caption(
         "Simulates terminal prices via GBM and computes per-contract P&L and annualized ROI. Educational only.")
@@ -3388,8 +3787,19 @@ with tabs[4]:
     with colB:
         paths = st.slider("Paths", 5000, 200000, 50000, step=5000)
     with colC:
+        # Get strategy choice first to set appropriate drift default
+        strat_choice_preview, _ = _get_selected_row()
+        # CSP: 0% drift (cash position, no equity exposure)
+        # CC/Collar: 7% drift (realistic equity market assumption)
+        default_drift = 0.00 if strat_choice_preview == "CSP" else 0.07
+        
         mc_drift = st.number_input(
-            "Drift (annual, decimal)", value=0.00, step=0.01, format="%.2f", key="mc_drift_input")
+            "Drift (annual, decimal)", 
+            value=default_drift, 
+            step=0.01, 
+            format="%.2f", 
+            key="mc_drift_input",
+            help="Expected annual return: 0% for CSP (cash-secured), 7% for CC/Collar (equity drift)")
     with colD:
         seed = st.number_input("Seed (0 = random)", value=0,
                                step=1, min_value=0, key="mc_seed_input")
@@ -3609,17 +4019,17 @@ with tabs[4]:
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
 # --- Tab 6: Playbook ---
-with tabs[5]:
+with tabs[6]:
     st.header("Best‑Practice Playbook")
     st.write("These are practical guardrails you can toggle against in the scanner.")
-    for name in ["CSP", "CC", "COLLAR"]:
+    for name in ["CSP", "CC", "COLLAR", "IRON_CONDOR"]:
         with st.expander(f"{name} — tips"):
             tips = best_practices(name)
             for t in tips:
                 st.markdown(f"- {t}")
 
 # --- Tab 7: Plan & Runbook ---
-with tabs[6]:
+with tabs[7]:
     st.header("Plan & Runbook — Uses the global selection above")
     st.caption(
         "We’ll check the globally selected contract/structure against best practices and generate order tickets.")
@@ -3712,7 +4122,7 @@ with tabs[6]:
                 st.markdown(f"- {m}")
 
 # --- Tab 8: Stress Test ---
-with tabs[7]:
+with tabs[8]:
     st.header("Stress Test — Uses the global selection above")
     st.caption(
         "Apply price and IV shocks, reduce time by a horizon, and see leg-level and total P&L.")
@@ -3786,7 +4196,7 @@ with tabs[7]:
 st.caption("This tool is for education only. Options involve risk and are not suitable for all investors.")
 
 # --- Tab 9: Overview ---
-with tabs[8]:
+with tabs[9]:
     st.header("Quick Overview — Strategy & Risk")
     st.caption(
         "A concise summary for the globally selected contract/structure, with tail‑loss probability.")
@@ -3891,7 +4301,8 @@ with tabs[8]:
                 iv_dec == iv_dec and iv_dec > 0.0) else 0.20
             params = dict(S0=price, days=days_for_mc, iv=iv_for_calc,
                           Kc=strike, call_premium=prem, div_ps_annual=div_ps_annual)
-            mc = mc_pnl("CC", params, n_paths=int(paths), mu=0.0, seed=None)
+            # Use realistic equity drift for CC (7% annual = historical equity returns)
+            mc = mc_pnl("CC", params, n_paths=int(paths), mu=0.07, seed=None)
 
         else:  # COLLAR
             kc = float(_safe_float(row.get("CallStrike")))
@@ -3930,8 +4341,9 @@ with tabs[8]:
             params = dict(S0=price, days=days_for_mc, iv=iv_for_calc,
                           Kc=kc, call_premium=call_prem, Kp=kp, put_premium=put_prem,
                           div_ps_annual=div_ps_annual)
+            # Use realistic equity drift for Collar (7% annual)
             mc = mc_pnl("COLLAR", params, n_paths=int(
-                paths), mu=0.0, seed=None)
+                paths), mu=0.07, seed=None)
 
         # Risk & reward summary from MC
         pnl = mc.get("pnl_paths")
@@ -3983,7 +4395,7 @@ with tabs[8]:
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
 
 # --- Tab 10: Roll Analysis ---
-with tabs[9]:
+with tabs[10]:
     st.header("Roll Analysis — Should I Roll This Position?")
     st.caption(
         "Evaluate whether rolling to a new expiration is better than closing the current position.")
