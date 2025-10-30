@@ -3958,7 +3958,7 @@ with tabs[5]:
             )
             mc = mc_pnl("CC", params, n_paths=int(paths),
                         mu=float(mc_drift), seed=seed)
-        else:  # COLLAR
+        elif strat_choice == "COLLAR":
             iv = 0.20  # conservative default
             div_ps_annual = float(
                 row.get("DivAnnualPS", 0.0)) if "DivAnnualPS" in row else 0.0
@@ -3974,52 +3974,56 @@ with tabs[5]:
             )
             mc = mc_pnl("COLLAR", params, n_paths=int(
                 paths), mu=float(mc_drift), seed=seed)
+        else:  # IRON_CONDOR
+            st.warning("⚠️ Monte Carlo simulation not yet implemented for Iron Condor strategy. Coming soon!")
+            mc = None
 
-        # Render outputs (unchanged)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Expected P&L / contract", f"${mc['pnl_expected']:,.0f}")
-        c2.metric("P&L (P5 / P50 / P95)",
-                  f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
-        c3.metric("Worst path", f"${mc['pnl_min']:,.0f}")
-        c4.metric("Collateral (capital)", f"${mc['collateral']:,.0f}")
+        # Render outputs (only if mc simulation was run)
+        if mc is not None:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Expected P&L / contract", f"${mc['pnl_expected']:,.0f}")
+            c2.metric("P&L (P5 / P50 / P95)",
+                      f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
+            c3.metric("Worst path", f"${mc['pnl_min']:,.0f}")
+            c4.metric("Collateral (capital)", f"${mc['collateral']:,.0f}")
 
-        pnl = mc["pnl_paths"]
-        bins = np.histogram_bin_edges(pnl, bins="auto")
-        hist, edges = np.histogram(pnl, bins=bins)
-        chart_df = pd.DataFrame(
-            {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
-        base_chart = alt.Chart(chart_df).mark_bar().encode(
-            x=alt.X("pnl:Q", title="P&L per contract (USD)"),
-            y=alt.Y("count:Q", title="Frequency"),
-            tooltip=["pnl", "count"],
-        )
-        st.altair_chart(base_chart, use_container_width=True)
+            pnl = mc["pnl_paths"]
+            bins = np.histogram_bin_edges(pnl, bins="auto")
+            hist, edges = np.histogram(pnl, bins=bins)
+            chart_df = pd.DataFrame(
+                {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
+            base_chart = alt.Chart(chart_df).mark_bar().encode(
+                x=alt.X("pnl:Q", title="P&L per contract (USD)"),
+                y=alt.Y("count:Q", title="Frequency"),
+                tooltip=["pnl", "count"],
+            )
+            st.altair_chart(base_chart, use_container_width=True)
 
-        def pct(x): return f"{x*100:.2f}%"
-        roi_rows = [
-            {"Scenario": "Expected", "Annualized ROI": pct(
-                mc["roi_ann_expected"])},
-            {"Scenario": "P5 (bear)", "Annualized ROI": pct(mc["roi_ann_p5"])},
-            {"Scenario": "P50 (median)", "Annualized ROI": pct(
-                mc["roi_ann_p50"])},
-            {"Scenario": "P95 (bull)", "Annualized ROI": pct(
-                mc["roi_ann_p95"])},
-        ]
-        st.subheader("Annualized ROI (from MC)")
-        st.dataframe(pd.DataFrame(roi_rows), use_container_width=True)
+            def pct(x): return f"{x*100:.2f}%"
+            roi_rows = [
+                {"Scenario": "Expected", "Annualized ROI": pct(
+                    mc["roi_ann_expected"])},
+                {"Scenario": "P5 (bear)", "Annualized ROI": pct(mc["roi_ann_p5"])},
+                {"Scenario": "P50 (median)", "Annualized ROI": pct(
+                    mc["roi_ann_p50"])},
+                {"Scenario": "P95 (bull)", "Annualized ROI": pct(
+                    mc["roi_ann_p95"])},
+            ]
+            st.subheader("Annualized ROI (from MC)")
+            st.dataframe(pd.DataFrame(roi_rows), use_container_width=True)
 
-        st.subheader("At‑a‑Glance: Trade Summary & Risk")
-        summary_rows = [
-            {"Scenario": "P5 (bear)", "P&L ($/contract)":
-             f"{mc['pnl_p5']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p5"])},
-            {"Scenario": "P50 (median)", "P&L ($/contract)":
-             f"{mc['pnl_p50']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p50"])},
-            {"Scenario": "P95 (bull)", "P&L ($/contract)":
-             f"{mc['pnl_p95']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p95"])},
-            {"Scenario": "Expected",
-                "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(mc["roi_ann_expected"])},
-        ]
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+            st.subheader("At‑a‑Glance: Trade Summary & Risk")
+            summary_rows = [
+                {"Scenario": "P5 (bear)", "P&L ($/contract)":
+                 f"{mc['pnl_p5']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p5"])},
+                {"Scenario": "P50 (median)", "P&L ($/contract)":
+                 f"{mc['pnl_p50']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p50"])},
+                {"Scenario": "P95 (bull)", "P&L ($/contract)":
+                 f"{mc['pnl_p95']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p95"])},
+                {"Scenario": "Expected",
+                    "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(mc["roi_ann_expected"])},
+            ]
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
 # --- Tab 6: Playbook ---
 with tabs[6]:
