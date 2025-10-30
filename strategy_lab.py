@@ -4335,11 +4335,15 @@ with st.sidebar:
     with st.expander("🎯 Pre-Screen Tickers", expanded=False):
         st.caption(
             "Filter a large ticker list for high-quality options candidates")
+        # Top 200 S&P 500 tickers by market cap (as of Oct 2025)
+        default_tickers = """AAPL, MSFT, NVDA, AMZN, GOOGL, GOOG, META, BRK.B, TSLA, LLY, AVGO, V, JPM, WMT, UNH, XOM, MA, ORCL, COST, HD, PG, NFLX, JNJ, ABBV, BAC, CRM, CVX, KO, MRK, AMD, CSCO, ACN, PEP, TMO, MCD, ABT, ADBE, LIN, IBM, PM, WFC, INTU, GE, TXN, QCOM, CAT, MS, ISRG, CMCSA, NOW, HON, VZ, AMGN, DHR, NEE, LOW, AXP, SPGI, T, UNP, BLK, PFE, UPS, AMAT, COP, RTX, GS, BKNG, SYK, DE, ELV, TJX, MDT, BX, VRTX, SBUX, PGR, PANW, ADP, BA, SCHW, ADI, GILD, MMC, CI, LRCX, CB, MDLZ, C, SO, REGN, FI, MU, INTC, ETN, BSX, AMT, DUK, ICE, PLD, KKR, CME, ZTS, WM, SLB, USB, MCO, EQIX, KLAC, NOC, BMY, APO, HCA, PH, MCK, ITW, SHW, CL, SNPS, PYPL, CEG, MSI, EOG, GD, APH, CTAS, MAR, CDNS, CMG, APD, WELL, FCX, TT, ORLY, ABNB, COF, ECL, ANET, PSX, TDG, FDX, MET, PCAR, AJG, AFL, RSG, NXPI, ADM, NEM, ROP, TRV, JCI, AZO, AMP, AIG, OXY, SRE, CARR, GM, ROST, MCHP, ADSK, CCI, BK, PAYX, SYY, TEL, MSCI, SPG, CPRT, O, HLT, TFC, URI, KMB, DXCM, CHTR, GWW, AEP, HES, FTNT, MNST, PSA, MRVL, ALL, DLR, OTIS, EA, DD, ACGL, NUE, CMI, KMI, D, HWM, IDXX, EW, IQV, PRU, PCG, YUM, KVUE, PWR, AXON, KHC, BKR, NDAQ, VST, CSGP, XYL, LHX, ROK"""
+        
         prescreen_input = st.text_area(
             "Tickers to pre-screen (comma-separated)",
-            value="AAPL, MSFT, GOOGL, AMZN, NVDA, AMD, TSLA, META, NFLX, JPM, BAC, GS, XOM, CVX, DIS, COIN, PLTR, SHOP, SQ, RIOT, MARA, SOFI, F, GM, BA, CAT, NKE, MCD, WMT, TGT, HD, LOW, PFE, JNJ, UNH, CRM, ORCL, INTC, QCOM, MU, AVGO",
-            height=100,
-            key="prescreen_tickers"
+            value=default_tickers,
+            height=150,
+            key="prescreen_tickers",
+            help="Default: Top 200 S&P 500 stocks by market cap"
         )
         col1, col2 = st.columns(2)
         with col1:
