@@ -2263,6 +2263,54 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             })
         return pd.DataFrame(out)
 
+    if strategy == "IRON_CONDOR":
+        Kps = float(row["PutShortStrike"])
+        Kpl = float(row["PutLongStrike"])
+        Kcs = float(row["CallShortStrike"])
+        Kcl = float(row["CallLongStrike"])
+        net_credit = float(row["NetCredit"])  # per share
+        
+        for sp in shocks_pct:
+            S1 = S0 * (1.0 + sp / 100.0)
+            iv1 = max(0.02, iv_base + (iv_down_shift if sp < 0 else iv_up_shift))
+            
+            # Calculate mark prices for all 4 legs
+            put_short_now = bs_put_price(S1, Kps, r, div_y, iv1, T)
+            put_long_now = bs_put_price(S1, Kpl, r, div_y, iv1, T)
+            call_short_now = bs_call_price(S1, Kcs, r, div_y, iv1, T)
+            call_long_now = bs_call_price(S1, Kcl, r, div_y, iv1, T)
+            
+            # P&L calculation: we sold put spread and call spread
+            # Put spread: sold Kps, bought Kpl (credit spread, want it to go to zero)
+            pnl_put_spread = (put_short_now - put_long_now) * -100.0  # negative because we want value to decrease
+            
+            # Call spread: sold Kcs, bought Kcl (credit spread, want it to go to zero)
+            pnl_call_spread = (call_short_now - call_long_now) * -100.0  # negative because we want value to decrease
+            
+            # Total P&L = credit received - current spread values
+            total = (net_credit * 100.0) + pnl_put_spread + pnl_call_spread
+            
+            # Capital = max spread width - net credit
+            put_width = Kps - Kpl
+            call_width = Kcl - Kcs
+            capital = (max(put_width, call_width) - net_credit) * 100.0
+            
+            cycle_roi = total / capital if capital > 0 else 0.0
+            ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
+            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            
+            out.append({
+                "Shock%": sp, "Price": S1,
+                "PutSpread_mark": put_short_now - put_long_now,
+                "CallSpread_mark": call_short_now - call_long_now,
+                "PutSpread_P&L": pnl_put_spread,
+                "CallSpread_P&L": pnl_call_spread,
+                "Total_P&L": total,
+                "ROI_on_cap%": cycle_roi * 100.0,
+                "Ann_ROI%": ann_roi * 100.0
+            })
+        return pd.DataFrame(out)
+
     raise ValueError("Unknown strategy for stress")
 
 
