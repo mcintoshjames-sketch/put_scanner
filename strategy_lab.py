@@ -3091,6 +3091,82 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             })
         return pd.DataFrame(out)
 
+    if strategy == "BULL_PUT_SPREAD":
+        sell_strike = float(row["SellStrike"])
+        buy_strike = float(row["BuyStrike"])
+        net_credit = float(row["NetCredit"])  # per share
+        
+        for sp in shocks_pct:
+            S1 = S0 * (1.0 + sp / 100.0)
+            iv1 = max(0.02, iv_base + (iv_down_shift if sp < 0 else iv_up_shift))
+            
+            # Calculate mark prices for both legs
+            sell_put_now = bs_put_price(S1, sell_strike, r, div_y, iv1, T)
+            buy_put_now = bs_put_price(S1, buy_strike, r, div_y, iv1, T)
+            
+            # Spread mark (what we'd pay to close)
+            spread_mark = sell_put_now - buy_put_now
+            
+            # P&L: Entry credit - current spread mark
+            total = (net_credit - spread_mark) * 100.0
+            
+            # Capital = max loss = spread width - net credit
+            spread_width = sell_strike - buy_strike
+            capital = (spread_width - net_credit) * 100.0
+            
+            cycle_roi = total / capital if capital > 0 else 0.0
+            ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
+            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            
+            out.append({
+                "Shock%": sp, "Price": S1,
+                "SellPut_mark": sell_put_now,
+                "BuyPut_mark": buy_put_now,
+                "Spread_mark": spread_mark,
+                "Total_P&L": total,
+                "ROI_on_cap%": cycle_roi * 100.0,
+                "Ann_ROI%": ann_roi * 100.0
+            })
+        return pd.DataFrame(out)
+
+    if strategy == "BEAR_CALL_SPREAD":
+        sell_strike = float(row["SellStrike"])
+        buy_strike = float(row["BuyStrike"])
+        net_credit = float(row["NetCredit"])  # per share
+        
+        for sp in shocks_pct:
+            S1 = S0 * (1.0 + sp / 100.0)
+            iv1 = max(0.02, iv_base + (iv_down_shift if sp < 0 else iv_up_shift))
+            
+            # Calculate mark prices for both legs
+            sell_call_now = bs_call_price(S1, sell_strike, r, div_y, iv1, T)
+            buy_call_now = bs_call_price(S1, buy_strike, r, div_y, iv1, T)
+            
+            # Spread mark (what we'd pay to close)
+            spread_mark = sell_call_now - buy_call_now
+            
+            # P&L: Entry credit - current spread mark
+            total = (net_credit - spread_mark) * 100.0
+            
+            # Capital = max loss = spread width - net credit
+            spread_width = buy_strike - sell_strike
+            capital = (spread_width - net_credit) * 100.0
+            
+            cycle_roi = total / capital if capital > 0 else 0.0
+            ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
+            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            
+            out.append({
+                "Shock%": sp, "Price": S1,
+                "SellCall_mark": sell_call_now,
+                "BuyCall_mark": buy_call_now,
+                "Spread_mark": spread_mark,
+                "Total_P&L": total,
+                "ROI_on_cap%": cycle_roi * 100.0,
+                "Ann_ROI%": ann_roi * 100.0
+            })
+        return pd.DataFrame(out)
+
     raise ValueError("Unknown strategy for stress")
 
 
