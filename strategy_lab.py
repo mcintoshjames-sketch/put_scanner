@@ -629,6 +629,24 @@ def option_gamma(S, K, r, sigma, T, q=0.0):
     return (disc_q * phi_d1) / (S * sigma * math.sqrt(T))
 
 
+def option_vega(S, K, r, sigma, T, q=0.0):
+    """
+    Vega: sensitivity of option price to changes in volatility.
+    Same for calls and puts.
+    Returns vega per 1% change in volatility (divide by 100 for per-point).
+    """
+    if sigma <= 0 or T <= 0 or S <= 0:
+        return float("nan")
+    d1, _ = _bs_d1_d2(S, K, r, sigma, T, q)
+    if d1 != d1:
+        return float("nan")
+    disc_q = math.exp(-q * T)
+    phi_d1 = (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * d1 * d1)
+    # Vega = S * phi(d1) * sqrt(T) * e^(-q*T)
+    # Divide by 100 to get per 1% change in IV
+    return (S * disc_q * phi_d1 * math.sqrt(T)) / 100.0
+
+
 def put_theta(S, K, r, sigma, T, q=0.0):
     """
     Theta for a put option: daily time decay (negative value = decay helps seller).
