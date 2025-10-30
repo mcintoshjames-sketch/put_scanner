@@ -2280,15 +2280,27 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             call_short_now = bs_call_price(S1, Kcs, r, div_y, iv1, T)
             call_long_now = bs_call_price(S1, Kcl, r, div_y, iv1, T)
             
-            # P&L calculation: we sold put spread and call spread
-            # Put spread: sold Kps, bought Kpl (credit spread, want it to go to zero)
-            pnl_put_spread = (put_short_now - put_long_now) * -100.0  # negative because we want value to decrease
+            # Current spread marks (what we'd pay to close)
+            # Put spread: short Kps @ put_short_now, long Kpl @ put_long_now
+            # Net debit to close = pay put_short_now, receive put_long_now
+            put_spread_mark = put_short_now - put_long_now
             
-            # Call spread: sold Kcs, bought Kcl (credit spread, want it to go to zero)
-            pnl_call_spread = (call_short_now - call_long_now) * -100.0  # negative because we want value to decrease
+            # Call spread: short Kcs @ call_short_now, long Kcl @ call_long_now  
+            # Net debit to close = pay call_short_now, receive call_long_now
+            call_spread_mark = call_short_now - call_long_now
             
-            # Total P&L = credit received - current spread values
-            total = (net_credit * 100.0) + pnl_put_spread + pnl_call_spread
+            # Iron Condor P&L Logic:
+            # Entry: Collected net_credit per share
+            # Now: Would cost (put_spread_mark + call_spread_mark) per share to close
+            # P&L per share = net_credit - (put_spread_mark + call_spread_mark)
+            # Multiply by 100 for per-contract
+            
+            total_spread_mark = put_spread_mark + call_spread_mark
+            total = (net_credit - total_spread_mark) * 100.0
+            
+            # Individual spread P&L (from current marks relative to zero)
+            pnl_put_spread = -put_spread_mark * 100.0
+            pnl_call_spread = -call_spread_mark * 100.0
             
             # Capital = max spread width - net credit
             put_width = Kps - Kpl
