@@ -4137,14 +4137,34 @@ with tabs[4]:
                                     st.warning(f"⚠️ Note: Earnings in {int(abs(days_val))} days")
                             
                             # Get profit capture percentage from user
-                            profit_capture_pct = st.slider(
-                                "Profit capture target for exit order",
-                                min_value=25,
-                                max_value=100,
-                                value=50,
-                                step=5,
-                                help="Exit when this % of max profit is captured (standard: 50-75%)"
-                            )
+                            col_profit, col_risk = st.columns(2)
+                            
+                            with col_profit:
+                                profit_capture_pct = st.slider(
+                                    "Profit capture target for exit order",
+                                    min_value=25,
+                                    max_value=100,
+                                    value=50,
+                                    step=5,
+                                    help="Exit when this % of max profit is captured (standard: 50-75%)"
+                                )
+                            
+                            with col_risk:
+                                generate_stop_loss = st.checkbox(
+                                    "Generate stop-loss order",
+                                    value=True,
+                                    help="Create risk limit order based on runbook (2x max profit loss)"
+                                )
+                                
+                                if generate_stop_loss:
+                                    risk_multiplier = st.slider(
+                                        "Risk limit (× max profit)",
+                                        min_value=1.5,
+                                        max_value=3.0,
+                                        value=2.0,
+                                        step=0.5,
+                                        help="Close if loss reaches this multiple of max profit (standard: 2x)"
+                                    )
                             
                             # Initialize trader in dry-run mode
                             trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -4361,10 +4381,126 @@ with tabs[4]:
                                         }
                                         exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
                                     
-                                    # Display success message and files
-                                    st.success(f"✅ Entry and Exit orders generated successfully!")
+                                    # Generate stop-loss orders if requested
+                                    stop_loss_result = None
+                                    if generate_stop_loss:
+                                        if selected_strategy == "CSP":
+                                            # Risk: Close if option value reaches 2x entry premium (doubled loss)
+                                            entry_premium = float(selected['Premium'])
+                                            stop_loss_price = entry_premium * risk_multiplier
+                                            max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
+                                            
+                                            stop_loss_order = trader.create_option_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                strike=float(selected['Strike']),
+                                                option_type="PUT",
+                                                action="BUY_TO_CLOSE",
+                                                quantity=int(num_contracts),
+                                                order_type="LIMIT",
+                                                limit_price=stop_loss_price,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                                "entry_premium": entry_premium,
+                                                "stop_loss_price": stop_loss_price,
+                                                "max_loss_per_contract": max_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                        
+                                        elif selected_strategy == "CC":
+                                            # Risk: Close if option value reaches 2x entry premium
+                                            entry_premium = float(selected['Premium'])
+                                            stop_loss_price = entry_premium * risk_multiplier
+                                            max_loss = entry_premium * (risk_multiplier - 1) * 100
+                                            
+                                            stop_loss_order = trader.create_option_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                strike=float(selected['Strike']),
+                                                option_type="CALL",
+                                                action="BUY_TO_CLOSE",
+                                                quantity=int(num_contracts),
+                                                order_type="LIMIT",
+                                                limit_price=stop_loss_price,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                                "entry_premium": entry_premium,
+                                                "stop_loss_price": stop_loss_price,
+                                                "max_loss_per_contract": max_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                        
+                                        elif selected_strategy == "IRON_CONDOR":
+                                            # Risk: Close if total spread cost reaches 2x entry credit
+                                            entry_credit = float(selected['NetCredit'])
+                                            stop_loss_debit = entry_credit * risk_multiplier
+                                            max_loss = (stop_loss_debit - entry_credit) * 100
+                                            
+                                            stop_loss_order = trader.create_iron_condor_exit_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                long_put_strike=float(selected['PutLongStrike']),
+                                                short_put_strike=float(selected['PutShortStrike']),
+                                                short_call_strike=float(selected['CallShortStrike']),
+                                                long_call_strike=float(selected['CallLongStrike']),
+                                                quantity=int(num_contracts),
+                                                limit_price=stop_loss_debit,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                                "entry_credit": entry_credit,
+                                                "stop_loss_debit": stop_loss_debit,
+                                                "max_loss_per_contract": max_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                        
+                                        elif selected_strategy == "COLLAR":
+                                            # Risk: Close call if it reaches 2x entry premium
+                                            call_entry = float(selected.get('CallPrem', 0))
+                                            call_stop_loss = call_entry * risk_multiplier
+                                            
+                                            stop_loss_order_call = trader.create_option_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                strike=float(selected['CallStrike']),
+                                                option_type="CALL",
+                                                action="BUY_TO_CLOSE",
+                                                quantity=int(num_contracts),
+                                                order_type="LIMIT",
+                                                limit_price=call_stop_loss,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata_call = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss on call",
+                                                "leg": "CALL",
+                                                "entry_premium": call_entry,
+                                                "stop_loss_price": call_stop_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call)
                                     
-                                    col_entry, col_exit = st.columns(2)
+                                    # Display success message and files
+                                    order_count = 2 if not generate_stop_loss else 3
+                                    st.success(f"✅ {order_count} order files generated successfully!")
+                                    
+                                    # Create columns based on whether stop-loss is included
+                                    if generate_stop_loss:
+                                        col_entry, col_exit, col_stop = st.columns(3)
+                                    else:
+                                        col_entry, col_exit = st.columns(2)
+                                        col_stop = None
                                     
                                     with col_entry:
                                         st.write("**📤 ENTRY Order**")
@@ -4444,19 +4580,64 @@ with tabs[4]:
                                         else:
                                             st.info("No exit order generated")
                                     
+                                    # Stop-loss column
+                                    if col_stop and stop_loss_result:
+                                        with col_stop:
+                                            st.write(f"**🛑 STOP-LOSS Order ({risk_multiplier}x loss limit)**")
+                                            
+                                            if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
+                                                # Collar stop-loss
+                                                st.code(stop_loss_result['filepath'], language=None)
+                                            else:
+                                                st.code(stop_loss_result['filepath'], language=None)
+                                            
+                                            with st.expander("📄 Stop-Loss Details"):
+                                                if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
+                                                    st.json(stop_loss_order_call)
+                                                else:
+                                                    st.json(stop_loss_order)
+                                            
+                                            # Download button
+                                            with open(stop_loss_result['filepath'] if not isinstance(stop_loss_result, dict) or 'call' not in stop_loss_result else stop_loss_result['filepath'], 'r') as f:
+                                                stop_loss_json = f.read()
+                                            
+                                            st.download_button(
+                                                label="⬇️ Download Stop-Loss",
+                                                data=stop_loss_json,
+                                                file_name=stop_loss_result['filepath'].split('/')[-1] if not isinstance(stop_loss_result, dict) else stop_loss_result['filepath'].split('/')[-1],
+                                                mime="application/json",
+                                                key="download_stop_loss"
+                                            )
+                                    
                                     # Instructions
                                     st.divider()
-                                    st.info("""
-                                    **📋 "Set and Forget" Instructions:**
-                                    
-                                    1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
-                                    2. **Wait for fill confirmation** before proceeding
-                                    3. **Submit EXIT order immediately after fill** with GTC duration
-                                    4. **Monitor position** - exit order will automatically execute at profit target
-                                    5. **Set calendar reminder** at 7-10 DTE to review if not yet closed
-                                    
-                                    💡 **Pro Tip:** Use GTC (Good Till Canceled) duration for exit orders so they remain active until filled or you cancel them.
-                                    """)
+                                    if generate_stop_loss:
+                                        st.info("""
+                                        **📋 "Set and Forget" with Risk Management:**
+                                        
+                                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
+                                        2. **Wait for fill confirmation** before proceeding
+                                        3. **Submit BOTH exit orders immediately after fill:**
+                                           - ✅ Profit-taking exit (captures gains at target)
+                                           - 🛑 Stop-loss exit (limits losses if trade goes against you)
+                                        4. **Use GTC duration** for both exit orders
+                                        5. **Let the market work** - whichever hits first will execute automatically
+                                        6. **Cancel the other order** once one fills (or let Schwab OCO if supported)
+                                        
+                                        💡 **Risk Management:** Stop-loss triggers at 2x max profit loss per runbook best practices.
+                                        """)
+                                    else:
+                                        st.info("""
+                                        **📋 "Set and Forget" Instructions:**
+                                        
+                                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
+                                        2. **Wait for fill confirmation** before proceeding
+                                        3. **Submit EXIT order immediately after fill** with GTC duration
+                                        4. **Monitor position** - exit order will automatically execute at profit target
+                                        5. **Set calendar reminder** at 7-10 DTE to review if not yet closed
+                                        
+                                        💡 **Pro Tip:** Use GTC (Good Till Canceled) duration for exit orders so they remain active until filled or you cancel them.
+                                        """)
                                 else:
                                     st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
                         
