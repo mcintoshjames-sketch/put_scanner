@@ -3205,8 +3205,118 @@ with tabs[0]:
             "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
             "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
         )
+
+# --- Tab 2: CC ---
+with tabs[1]:
+    st.header("Covered Calls")
+    if df_cc.empty:
+        st.info("Run a scan or loosen CC filters.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
+                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "DivYld%", "DaysToEarnings", "Score"]
+        show_cols = [c for c in show_cols if c in df_cc.columns]
+
+        # Add earnings warning info box
+        if "DaysToEarnings" in df_cc.columns:
+            # Filter for non-null values and convert to numeric to handle None
+            days_col = pd.to_numeric(df_cc["DaysToEarnings"], errors='coerce')
+            earnings_nearby = df_cc[days_col.notna() & (days_col.abs() <= 14)]
+            if not earnings_nearby.empty:
+                st.warning(
+                    f"⚠️ {len(earnings_nearby)} position(s) have earnings within 14 days. Review 'DaysToEarnings' column.")
+
+        st.dataframe(df_cc[show_cols], use_container_width=True, height=520)
+
+        # Add earnings legend
+        st.caption(
+            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
+            "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
+        )
+
+# --- Tab 3: Collars ---
+with tabs[2]:
+    st.header("Collars (Stock + Short Call + Long Put)")
+    if df_collar.empty:
+        st.info("Run a scan or loosen Collar settings.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
+                     "CallStrike", "CallPrem", "PutStrike", "PutPrem", "NetCredit",
+                     "ROI%_ann", "CallΔ", "PutΔ", "CallSpread%", "PutSpread%", "CallOI", "PutOI",
+                     "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "Score"]
+        show_cols = [c for c in show_cols if c in df_collar.columns]
+        st.dataframe(df_collar[show_cols],
+                     use_container_width=True, height=520)
+
+# --- Tab 3: Iron Condor ---
+with tabs[3]:
+    st.header("Iron Condor (Sell Put Spread + Sell Call Spread)")
+    if df_iron_condor.empty:
+        st.info("Run a scan or loosen Iron Condor settings.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
+                     "PutShortStrike", "PutLongStrike", "PutSpreadCredit", "PutShortΔ",
+                     "CallShortStrike", "CallLongStrike", "CallSpreadCredit", "CallShortΔ",
+                     "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills",
+                     "BreakevenLower", "BreakevenUpper", "Range",
+                     "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
+                     "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "Score"]
+        show_cols = [c for c in show_cols if c in df_iron_condor.columns]
+        st.dataframe(df_iron_condor[show_cols],
+                     use_container_width=True, height=520)
         
-        # Trading Panel (Dry-Run Mode)
+        st.caption(
+            "**PutShortΔ/CallShortΔ**: Delta of short strikes (target ~±0.16 = 84% POEW) | "
+            "**MaxLoss**: Wing width − net credit | "
+            "**ROI%_ann**: (Net credit / Max loss) × (365 / Days) × 100 | "
+            "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
+        )
+
+# --- Tab 4: Compare ---
+with tabs[4]:
+    st.header("Compare Projected Annualized ROIs (mid-price based)")
+    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty:
+        st.info("No results yet. Run a scan.")
+    else:
+        pieces = []
+        if not df_csp.empty:
+            tmp = df_csp[["Strategy", "Ticker", "Exp", "Days",
+                          "Strike", "Premium", "ROI%_ann", "Score"]].copy()
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | K=" + tmp["Strike"].astype(str)
+            pieces.append(tmp)
+        if not df_cc.empty:
+            tmp = df_cc[["Strategy", "Ticker", "Exp", "Days",
+                         "Strike", "Premium", "ROI%_ann", "Score"]].copy()
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | K=" + tmp["Strike"].astype(str)
+            pieces.append(tmp)
+        if not df_collar.empty:
+            tmp = df_collar[["Strategy", "Ticker", "Exp", "Days", "CallStrike",
+                             "PutStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = tmp.rename(columns={"CallStrike": "Strike"})
+            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | K=" + tmp["Strike"].astype(str)
+            tmp["Strategy"] = "COLLAR"
+            pieces.append(tmp)
+        if not df_iron_condor.empty:
+            tmp = df_iron_condor[["Strategy", "Ticker", "Exp", "Days", "CallShortStrike",
+                                   "PutShortStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
+            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
+            pieces.append(tmp)
+
+        cmp_df = pd.concat(
+            pieces, ignore_index=True) if pieces else pd.DataFrame()
+        if cmp_df.empty:
+            st.info("No comparable rows.")
+        else:
+            st.dataframe(cmp_df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]),
+                         use_container_width=True, height=520)
+        
+        # Trade Execution Module
         st.divider()
         with st.expander("🔧 Trade Execution (Test Mode)", expanded=False):
             st.info("📋 **Test Mode Enabled**: Orders will be exported to JSON files for review, not sent to Schwab API")
@@ -3667,117 +3777,7 @@ with tabs[0]:
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
             else:
-                st.info("No contracts available. Run a CSP scan first.")
-
-# --- Tab 2: CC ---
-with tabs[1]:
-    st.header("Covered Calls")
-    if df_cc.empty:
-        st.info("Run a scan or loosen CC filters.")
-    else:
-        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
-                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "DivYld%", "DaysToEarnings", "Score"]
-        show_cols = [c for c in show_cols if c in df_cc.columns]
-
-        # Add earnings warning info box
-        if "DaysToEarnings" in df_cc.columns:
-            # Filter for non-null values and convert to numeric to handle None
-            days_col = pd.to_numeric(df_cc["DaysToEarnings"], errors='coerce')
-            earnings_nearby = df_cc[days_col.notna() & (days_col.abs() <= 14)]
-            if not earnings_nearby.empty:
-                st.warning(
-                    f"⚠️ {len(earnings_nearby)} position(s) have earnings within 14 days. Review 'DaysToEarnings' column.")
-
-        st.dataframe(df_cc[show_cols], use_container_width=True, height=520)
-
-        # Add earnings legend
-        st.caption(
-            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
-            "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
-        )
-
-# --- Tab 3: Collars ---
-with tabs[2]:
-    st.header("Collars (Stock + Short Call + Long Put)")
-    if df_collar.empty:
-        st.info("Run a scan or loosen Collar settings.")
-    else:
-        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
-                     "CallStrike", "CallPrem", "PutStrike", "PutPrem", "NetCredit",
-                     "ROI%_ann", "CallΔ", "PutΔ", "CallSpread%", "PutSpread%", "CallOI", "PutOI",
-                     "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "Score"]
-        show_cols = [c for c in show_cols if c in df_collar.columns]
-        st.dataframe(df_collar[show_cols],
-                     use_container_width=True, height=520)
-
-# --- Tab 3: Iron Condor ---
-with tabs[3]:
-    st.header("Iron Condor (Sell Put Spread + Sell Call Spread)")
-    if df_iron_condor.empty:
-        st.info("Run a scan or loosen Iron Condor settings.")
-    else:
-        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
-                     "PutShortStrike", "PutLongStrike", "PutSpreadCredit", "PutShortΔ",
-                     "CallShortStrike", "CallLongStrike", "CallSpreadCredit", "CallShortΔ",
-                     "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills",
-                     "BreakevenLower", "BreakevenUpper", "Range",
-                     "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
-                     "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "Score"]
-        show_cols = [c for c in show_cols if c in df_iron_condor.columns]
-        st.dataframe(df_iron_condor[show_cols],
-                     use_container_width=True, height=520)
-        
-        st.caption(
-            "**PutShortΔ/CallShortΔ**: Delta of short strikes (target ~±0.16 = 84% POEW) | "
-            "**MaxLoss**: Wing width − net credit | "
-            "**ROI%_ann**: (Net credit / Max loss) × (365 / Days) × 100 | "
-            "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
-        )
-
-# --- Tab 4: Compare ---
-with tabs[4]:
-    st.header("Compare Projected Annualized ROIs (mid-price based)")
-    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty:
-        st.info("No results yet. Run a scan.")
-    else:
-        pieces = []
-        if not df_csp.empty:
-            tmp = df_csp[["Strategy", "Ticker", "Exp", "Days",
-                          "Strike", "Premium", "ROI%_ann", "Score"]].copy()
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            pieces.append(tmp)
-        if not df_cc.empty:
-            tmp = df_cc[["Strategy", "Ticker", "Exp", "Days",
-                         "Strike", "Premium", "ROI%_ann", "Score"]].copy()
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            pieces.append(tmp)
-        if not df_collar.empty:
-            tmp = df_collar[["Strategy", "Ticker", "Exp", "Days", "CallStrike",
-                             "PutStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
-            tmp = tmp.rename(columns={"CallStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            tmp["Strategy"] = "COLLAR"
-            pieces.append(tmp)
-        if not df_iron_condor.empty:
-            tmp = df_iron_condor[["Strategy", "Ticker", "Exp", "Days", "CallShortStrike",
-                                   "PutShortStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
-            tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
-            pieces.append(tmp)
-
-        cmp_df = pd.concat(
-            pieces, ignore_index=True) if pieces else pd.DataFrame()
-        if cmp_df.empty:
-            st.info("No comparable rows.")
-        else:
-            st.dataframe(cmp_df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]),
-                         use_container_width=True, height=520)
+                st.info("No contracts available. Run a scan first.")
 
 # --- Tab 5: Risk (Monte Carlo) ---
 with tabs[5]:
