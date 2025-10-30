@@ -5638,8 +5638,8 @@ with tabs[6]:
             else:
                 st.info("No contracts available. Run a scan first.")
 
-# --- Tab 5: Risk (Monte Carlo) ---
-with tabs[5]:
+# --- Tab 7: Risk (Monte Carlo) ---
+with tabs[7]:
     st.header("Risk (Monte Carlo) — Uses the global selection above")
     st.caption(
         "Simulates terminal prices via GBM and computes per-contract P&L and annualized ROI. Educational only.")
@@ -5898,18 +5898,18 @@ with tabs[5]:
             ]
             st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
-# --- Tab 6: Playbook ---
-with tabs[6]:
+# --- Tab 8: Playbook ---
+with tabs[8]:
     st.header("Best‑Practice Playbook")
     st.write("These are practical guardrails you can toggle against in the scanner.")
-    for name in ["CSP", "CC", "COLLAR", "IRON_CONDOR"]:
+    for name in ["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
         with st.expander(f"{name} — tips"):
             tips = best_practices(name)
             for t in tips:
                 st.markdown(f"- {t}")
 
-# --- Tab 7: Plan & Runbook ---
-with tabs[7]:
+# --- Tab 9: Plan & Runbook ---
+with tabs[9]:
     st.header("Plan & Runbook — Uses the global selection above")
     st.caption(
         "We’ll check the globally selected contract/structure against best practices and generate order tickets.")
@@ -6007,8 +6007,8 @@ with tabs[7]:
             for m in warn_msgs:
                 st.markdown(f"- {m}")
 
-# --- Tab 8: Stress Test ---
-with tabs[8]:
+# --- Tab 10: Stress Test ---
+with tabs[10]:
     st.header("Stress Test — Uses the global selection above")
     st.caption(
         "Apply price and IV shocks, reduce time by a horizon, and see leg-level and total P&L.")
@@ -6081,8 +6081,8 @@ with tabs[8]:
 
 st.caption("This tool is for education only. Options involve risk and are not suitable for all investors.")
 
-# --- Tab 9: Overview ---
-with tabs[9]:
+# --- Tab 11: Overview ---
+with tabs[11]:
     st.header("Quick Overview — Strategy & Risk")
     st.caption(
         "A concise summary for the globally selected contract/structure, with tail‑loss probability.")
@@ -6346,8 +6346,8 @@ with tabs[9]:
         st.caption(
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
 
-# --- Tab 10: Roll Analysis ---
-with tabs[10]:
+# --- Tab 12: Roll Analysis ---
+with tabs[12]:
     st.header("Roll Analysis — Should I Roll This Position?")
     st.caption(
         "Evaluate whether rolling to a new expiration is better than closing the current position.")
