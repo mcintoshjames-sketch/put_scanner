@@ -3528,6 +3528,8 @@ with tabs[4]:
             st.divider()
             st.subheader("📝 Step 2: Create Order")
             
+            st.info("📋 **Currently supports Cash-Secured Puts only**. Support for Covered Calls, Collars, and Iron Condors coming soon.")
+            
             # Select a contract from the results
             if not df_csp.empty:
                 col1, col2 = st.columns([3, 1])
