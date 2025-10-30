@@ -2003,7 +2003,14 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             pl_vega = option_vega(S, Kl, risk_free, pl_iv, T, div_y)
             net_vega = ps_vega - pl_vega  # Negative (we want IV to decrease)
             
-            # Scoring (same weights as CSP for consistency)
+            # Scoring (normalize ROI for credit spreads to be comparable with CSPs)
+            # Credit spreads naturally have higher ROI% due to lower capital requirement
+            # Cap ROI contribution to prevent score inflation
+            # CSP typical range: 10-50% annualized (0.10-0.50)
+            # Credit spread typical range: 50-200% annualized (0.50-2.00)
+            # Normalize by capping at 1.0 for scoring purposes
+            roi_for_score = min(roi_ann, 1.0)  # Cap at 100% for scoring
+            
             liq_score = max(0.0, 1.0 - min((ps["spread%"] or 20.0), 20.0) / 20.0)
             
             # Theta/Gamma scoring (same as CSP)
@@ -2023,7 +2030,7 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             else:
                 tg_score = 0.0
             
-            score = (0.35 * roi_ann +
+            score = (0.35 * roi_for_score +
                      0.15 * (min(cushion_sigma, 3.0) / 3.0 if cushion_sigma == cushion_sigma else 0.0) +
                      0.30 * tg_score +
                      0.20 * liq_score)
@@ -2257,7 +2264,11 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             cl_vega = option_vega(S, Kl, risk_free, cl_iv, T, div_y)
             net_vega = cs_vega - cl_vega  # Negative (we want IV to decrease)
             
-            # Scoring (same weights as CSP for consistency)
+            # Scoring (normalize ROI for credit spreads to be comparable with CSPs)
+            # Credit spreads naturally have higher ROI% due to lower capital requirement
+            # Cap ROI contribution to prevent score inflation
+            roi_for_score = min(roi_ann, 1.0)  # Cap at 100% for scoring
+            
             liq_score = max(0.0, 1.0 - min((cs["spread%"] or 20.0), 20.0) / 20.0)
             
             # Theta/Gamma scoring (same as CSP)
@@ -2277,7 +2288,7 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             else:
                 tg_score = 0.0
             
-            score = (0.35 * roi_ann +
+            score = (0.35 * roi_for_score +
                      0.15 * (min(cushion_sigma, 3.0) / 3.0 if cushion_sigma == cushion_sigma else 0.0) +
                      0.30 * tg_score +
                      0.20 * liq_score)
