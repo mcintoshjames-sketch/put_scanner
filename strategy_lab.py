@@ -2809,6 +2809,19 @@ with tabs[0]:
         with st.expander("🔧 Trade Execution (Test Mode)", expanded=False):
             st.info("📋 **Test Mode Enabled**: Orders will be exported to JSON files for review, not sent to Schwab API")
             
+            # Safety Settings
+            with st.expander("⚙️ Safety Settings", expanded=False):
+                st.write("**Earnings Protection:**")
+                earnings_warning_days = st.slider(
+                    "Warn if earnings within X days",
+                    min_value=0,
+                    max_value=30,
+                    value=14,
+                    step=1,
+                    help="Show warning if stock reports earnings within this many days (before or after). Set to 0 to disable."
+                )
+                st.caption(f"Current setting: {'Disabled' if earnings_warning_days == 0 else f'Warn if earnings within {earnings_warning_days} days'}")
+            
             # Account Numbers Section
             st.subheader("📋 Step 1: Get Account Numbers")
             st.write("**Required**: Retrieve your encrypted account ID for order placement")
@@ -2935,6 +2948,34 @@ with tabs[0]:
                 col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
                 col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
                 
+                # Earnings Safety Check
+                days_to_earnings = selected.get('DaysToEarnings', None)
+                earnings_warning_threshold = earnings_warning_days  # Use setting from above
+                
+                if earnings_warning_threshold > 0 and days_to_earnings is not None and not pd.isna(days_to_earnings):
+                    days_to_earnings = float(days_to_earnings)
+                    
+                    if abs(days_to_earnings) <= earnings_warning_threshold:
+                        st.divider()
+                        if days_to_earnings > 0:
+                            st.error(f"⚠️ **EARNINGS WARNING**: {selected['Ticker']} reports earnings in **{int(days_to_earnings)} days**")
+                        elif days_to_earnings < 0:
+                            st.warning(f"⚠️ **EARNINGS NOTICE**: {selected['Ticker']} reported earnings **{int(abs(days_to_earnings))} days ago**")
+                        else:
+                            st.error(f"🚨 **EARNINGS TODAY**: {selected['Ticker']} reports earnings **TODAY**")
+                        
+                        with st.expander("📊 Why This Matters", expanded=False):
+                            st.write("**Risks Around Earnings:**")
+                            st.write("• **High IV**: Implied volatility inflates before earnings (IV crush after)")
+                            st.write("• **Price Gaps**: Stock can gap up/down significantly on earnings news")
+                            st.write("• **Assignment Risk**: Higher chance of early assignment if deep ITM")
+                            st.write("• **Unpredictable**: Even good earnings can cause selloffs (and vice versa)")
+                            st.write("")
+                            st.write("**Recommendation:**")
+                            st.write("• For beginners: **Avoid trading around earnings entirely**")
+                            st.write("• For experienced: Only trade if you understand the risks")
+                            st.write("• Consider waiting until after earnings are announced")
+                
                 # Buying Power Check button
                 st.divider()
                 col_check, col_preview, col_export = st.columns(3)
@@ -2944,6 +2985,12 @@ with tabs[0]:
                         try:
                             from providers.schwab_trading import SchwabTrader
                             from providers.schwab import SchwabClient
+                            
+                            # Earnings safety check before proceeding
+                            if earnings_warning_threshold > 0 and days_to_earnings is not None and not pd.isna(days_to_earnings):
+                                days_val = float(days_to_earnings)
+                                if abs(days_val) <= earnings_warning_threshold:
+                                    st.warning(f"⚠️ Earnings in {int(abs(days_val))} days - proceed with caution")
                             
                             # Check if Schwab provider is active
                             if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
@@ -2988,6 +3035,12 @@ with tabs[0]:
                         try:
                             from providers.schwab_trading import SchwabTrader
                             from providers.schwab import SchwabClient
+                            
+                            # Earnings safety check before proceeding
+                            if earnings_warning_threshold > 0 and days_to_earnings is not None and not pd.isna(days_to_earnings):
+                                days_val = float(days_to_earnings)
+                                if abs(days_val) <= earnings_warning_threshold:
+                                    st.warning(f"⚠️ Earnings in {int(abs(days_val))} days - proceed with caution")
                             
                             # Check if Schwab provider is active
                             if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
@@ -3077,6 +3130,12 @@ with tabs[0]:
                     if st.button("📥 Generate Order File", type="primary", use_container_width=True):
                         try:
                             from providers.schwab_trading import SchwabTrader, format_order_summary
+                            
+                            # Earnings safety check before proceeding
+                            if earnings_warning_threshold > 0 and days_to_earnings is not None and not pd.isna(days_to_earnings):
+                                days_val = float(days_to_earnings)
+                                if abs(days_val) <= earnings_warning_threshold:
+                                    st.warning(f"⚠️ Note: Earnings in {int(abs(days_val))} days")
                             
                             # Initialize trader in dry-run mode
                             trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
