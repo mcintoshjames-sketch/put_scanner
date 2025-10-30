@@ -4154,7 +4154,7 @@ with tabs[4]:
                                     "Profit capture target for exit order",
                                     min_value=25,
                                     max_value=100,
-                                    value=50,
+                                    value=70,
                                     step=5,
                                     help="Exit when this % of max profit is captured (standard: 50-75%)"
                                 )
