@@ -1650,14 +1650,18 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 mc_expected_pnl = mc_result['pnl_expected']
                 mc_roi_ann = mc_result['roi_ann_expected']
                 
+                # ===== HARD FILTER: Negative MC expected P&L is intolerable =====
+                # Skip opportunities with negative expected value under realistic price paths
+                if mc_expected_pnl < 0:
+                    # Skip this opportunity entirely - negative expected value
+                    continue
+                
                 # Calculate max profit (premium received per contract)
                 max_profit = prem * 100.0
                 
                 # Graduated penalty based on MC expected P&L vs. max profit
-                # Negative expected value gets heavy penalty
-                if mc_expected_pnl < 0:
-                    mc_penalty = 0.20  # 80% score reduction for negative expected value
-                elif mc_expected_pnl < max_profit * 0.25:
+                # For positive expected value, reward based on quality
+                if mc_expected_pnl < max_profit * 0.25:
                     # Linear scale from 0 to 25% of max profit: penalty 0.20 -> 0.50
                     mc_penalty = 0.20 + (mc_expected_pnl / (max_profit * 0.25)) * 0.30
                 elif mc_expected_pnl < max_profit * 0.50:
