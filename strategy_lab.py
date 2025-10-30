@@ -713,11 +713,21 @@ def trailing_dividend_info(ticker_obj, S):
         return 0.0, 0.0
 
 
-def get_earnings_date(stock: yf.Ticker):
+def get_earnings_date(stock: yf.Ticker, use_alpha_vantage=False):
     """
     Try multiple methods to get earnings date from yfinance.
-    Returns None if unavailable.
+    Optionally falls back to Alpha Vantage if Yahoo Finance has no data.
+    
+    Args:
+        stock: yfinance Ticker object
+        use_alpha_vantage: If True, fall back to Alpha Vantage when Yahoo fails.
+                          Default False to preserve API quota during screening.
+    
+    Returns:
+        Earnings date or None if unavailable.
     """
+    yahoo_date = None
+    
     try:
         # Method 1: Try the calendar attribute
         cal = stock.calendar
@@ -725,13 +735,18 @@ def get_earnings_date(stock: yf.Ticker):
             if "Earnings Date" in cal.index:
                 ed = cal.loc["Earnings Date"]
                 if hasattr(ed, "__iter__") and len(ed) > 0:
-                    return pd.to_datetime(ed[0]).date()
-                return pd.to_datetime(ed).date()
-            if "Earnings Date" in cal.columns:
+                    yahoo_date = pd.to_datetime(ed[0]).date()
+                else:
+                    yahoo_date = pd.to_datetime(ed).date()
+            elif "Earnings Date" in cal.columns:
                 ed = cal["Earnings Date"].iloc[0]
                 if hasattr(ed, "__iter__") and len(ed) > 0:
-                    return pd.to_datetime(ed[0]).date()
-                return pd.to_datetime(ed).date()
+                    yahoo_date = pd.to_datetime(ed[0]).date()
+                else:
+                    yahoo_date = pd.to_datetime(ed).date()
+            
+            if yahoo_date:
+                return yahoo_date
     except Exception:
         pass
 
@@ -741,12 +756,27 @@ def get_earnings_date(stock: yf.Ticker):
             earnings_dates = stock.earnings_dates
             if earnings_dates is not None and not earnings_dates.empty:
                 # Get the first future date
-                future_dates = earnings_dates[earnings_dates.index > pd.Timestamp.now(
-                )]
+                future_dates = earnings_dates[earnings_dates.index > pd.Timestamp.now()]
                 if not future_dates.empty:
-                    return future_dates.index[0].date()
+                    yahoo_date = future_dates.index[0].date()
+                    return yahoo_date
     except Exception:
         pass
+    
+    # Method 3: Fallback to Alpha Vantage if Yahoo has no data (ONLY if enabled)
+    # This is disabled by default to preserve API quota during screening
+    if use_alpha_vantage:
+        try:
+            from providers.alpha_vantage import get_earnings_with_fallback
+            
+            # This will only call Alpha Vantage if yahoo_date is None
+            symbol = stock.ticker if hasattr(stock, 'ticker') else None
+            if symbol:
+                fallback_date = get_earnings_with_fallback(symbol, yahoo_date)
+                if fallback_date:
+                    return fallback_date
+        except Exception:
+            pass
 
     return None
 
@@ -2802,7 +2832,9 @@ with tabs[0]:
 
         # Add earnings legend
         st.caption(
-            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown)")
+            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
+            "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
+        )
         
         # Trading Panel (Dry-Run Mode)
         st.divider()
@@ -2821,6 +2853,50 @@ with tabs[0]:
                     help="Show warning if stock reports earnings within this many days (before or after). Set to 0 to disable."
                 )
                 st.caption(f"Current setting: {'Disabled' if earnings_warning_days == 0 else f'Warn if earnings within {earnings_warning_days} days'}")
+                
+                # Alpha Vantage API Status
+                st.divider()
+                st.write("**📊 Earnings Data Sources:**")
+                st.info("💡 **Smart API Usage**: Alpha Vantage is only called when you preview/place orders, NOT during screening. This preserves your 25 calls/day quota.")
+                
+                try:
+                    from providers.alpha_vantage import AlphaVantageClient
+                    import os
+                    
+                    api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+                    if api_key:
+                        client = AlphaVantageClient(api_key)
+                        remaining = client.get_remaining_calls()
+                        used = 25 - remaining
+                        
+                        # Color code based on usage
+                        if remaining > 15:
+                            status_color = "🟢"
+                            status_text = "Healthy"
+                        elif remaining > 5:
+                            status_color = "🟡"
+                            status_text = "Moderate"
+                        else:
+                            status_color = "🔴"
+                            status_text = "Limited"
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Screening", "Yahoo Finance Only", help="Free, unlimited - protects API quota")
+                        with col2:
+                            st.metric("Order Preview", "Yahoo → Alpha Vantage", help="Fallback enabled for accurate data")
+                        
+                        st.progress(used / 25, text=f"{status_color} **Alpha Vantage**: {used}/25 calls used today ({status_text})")
+                        st.caption(f"✓ {remaining} API calls remaining • Resets daily • 24hr cache active")
+                        
+                        if remaining <= 5:
+                            st.warning("⚠️ Alpha Vantage API limit nearly reached. Cache will be used for repeated symbols.")
+                    else:
+                        st.info("📡 Using Yahoo Finance only (Alpha Vantage not configured)")
+                except ImportError:
+                    st.info("📡 Using Yahoo Finance for earnings data")
+                except Exception as e:
+                    st.caption(f"⚠️ Could not check API status: {str(e)}")
             
             # Account Numbers Section
             st.subheader("📋 Step 1: Get Account Numbers")
@@ -2903,6 +2979,20 @@ with tabs[0]:
                     
                     if selected_idx is not None:
                         selected = df_csp[df_csp.index == df_csp_display.index[selected_idx]].iloc[0]
+                        
+                        # Re-fetch earnings date with Alpha Vantage enabled for accurate data
+                        # (During screening, only Yahoo is used to preserve API quota)
+                        try:
+                            import yfinance as yf
+                            stock = yf.Ticker(selected['Ticker'])
+                            fresh_earnings = get_earnings_date(stock, use_alpha_vantage=True)
+                            if fresh_earnings:
+                                # Update the days to earnings with fresh data
+                                fresh_days = (fresh_earnings - datetime.now(timezone.utc).date()).days
+                                selected['DaysToEarnings'] = fresh_days
+                                st.caption(f"✓ Earnings data refreshed with Alpha Vantage fallback")
+                        except Exception as e:
+                            st.caption(f"⚠️ Could not refresh earnings: {str(e)}")
                         
                         # Display selected contract details
                         st.write("**Selected Contract:**")
@@ -3232,7 +3322,9 @@ with tabs[1]:
 
         # Add earnings legend
         st.caption(
-            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown)")
+            "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
+            "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
+        )
 
 # --- Tab 3: Collars ---
 with tabs[2]:
