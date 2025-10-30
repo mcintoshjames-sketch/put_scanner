@@ -1851,7 +1851,7 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
     """
     checks = []
     flags = {"assignment_risk": False, "liquidity_warn": False, "tenor_warn": False,
-             "excess_negative": False, "cushion_low": False}
+             "excess_negative": False, "cushion_low": False, "earnings_risk": False}
 
     days = int(_series_get(row, "Days", 0))
     spread = float(_series_get(row, "Spread%", float("nan")))
@@ -1941,6 +1941,33 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
             ("Liquidity", "⚠️", "; ".join(why) or "insufficient data"))
         flags["liquidity_warn"] = True
 
+    # Volume/OI ratio (liquidity health check)
+    volume = float(_series_get(row, "Volume", float("nan")))
+    if volume == volume and oi > 0:
+        vol_oi_ratio = volume / oi
+        if vol_oi_ratio >= 0.5:
+            checks.append(("Volume/OI ratio", "✅", f"{vol_oi_ratio:.2f} (healthy turnover)"))
+        elif vol_oi_ratio >= 0.25:
+            checks.append(("Volume/OI ratio", "⚠️", f"{vol_oi_ratio:.2f} (moderate, prefer ≥0.5)"))
+        else:
+            checks.append(("Volume/OI ratio", "❌", f"{vol_oi_ratio:.2f} (stale OI risk)"))
+    else:
+        checks.append(("Volume/OI ratio", "⚠️", "n/a (volume data missing)"))
+
+    # Earnings proximity check (for CSP and CC)
+    if strategy in ("CSP", "CC"):
+        days_to_earnings = int(_safe_int(_series_get(row, "DaysToEarnings", -1)))
+        if 0 <= days_to_earnings <= days:
+            checks.append(("Earnings risk", "⚠️", 
+                          f"Earnings in {days_to_earnings} days (high volatility event)"))
+            flags["earnings_risk"] = True
+        elif 0 <= days_to_earnings <= days + 7:
+            checks.append(("Earnings risk", "⚠️", 
+                          f"Earnings shortly after expiry (+{days_to_earnings - days} days)"))
+        elif days_to_earnings > 0:
+            checks.append(("Earnings risk", "✅", f"No earnings within cycle (>{days_to_earnings} days)"))
+        # If days_to_earnings is -1 or invalid, skip the check (data not available)
+
     # Cushion (sigmas from strike)
     if strategy == "COLLAR":
         # Report both sides for collars
@@ -2021,6 +2048,20 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
         if otm_pct == otm_pct and otm_pct < thresholds.get("min_otm_cc", 2.0):
             checks.append(
                 ("OTM distance", "⚠️", f"{otm_pct:.1f}% OTM (pref ≥ 2–6%)"))
+        
+        # Check strike vs cost basis (if cost basis is available)
+        cost_basis = float(_series_get(row, "CostBasis", float("nan")))
+        K = float(_series_get(row, "Strike", float("nan")))
+        if cost_basis == cost_basis and K == K and cost_basis > 0:
+            if K >= cost_basis:
+                profit_on_assignment = ((K - cost_basis) / cost_basis) * 100
+                checks.append(("Strike vs cost basis", "✅", 
+                              f"Strike ${K:.2f} ≥ basis ${cost_basis:.2f} (+{profit_on_assignment:.1f}% if assigned)"))
+            else:
+                loss_on_assignment = ((K - cost_basis) / cost_basis) * 100
+                checks.append(("Strike vs cost basis", "❌", 
+                              f"Strike ${K:.2f} < basis ${cost_basis:.2f} ({loss_on_assignment:.1f}% loss if assigned)"))
+                flags["below_cost_basis"] = True
 
     elif strategy == "COLLAR":
         cdelta = compute_call_delta_for_row(
@@ -2079,6 +2120,26 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
                 checks.append(("Balanced spreads", "✅", f"Both ${put_width:.0f} wide"))
             else:
                 checks.append(("Balanced spreads", "⚠️", f"Put ${put_width:.0f}, Call ${call_width:.0f} (unbalanced)"))
+        
+        # Check wing distance (distance from short to long strikes)
+        if all(x == x for x in [put_long_strike, put_short_strike, call_short_strike, call_long_strike]):
+            put_wing_dist = put_short_strike - put_long_strike
+            call_wing_dist = call_long_strike - call_short_strike
+            
+            # Calculate distance as % of short strike
+            put_wing_pct = (put_wing_dist / put_short_strike) * 100 if put_short_strike > 0 else 0.0
+            call_wing_pct = (call_wing_dist / call_short_strike) * 100 if call_short_strike > 0 else 0.0
+            min_wing_pct = min(put_wing_pct, call_wing_pct)
+            
+            if min_wing_pct >= 2.0:
+                checks.append(("Wing distance", "✅", 
+                              f"Put {put_wing_pct:.1f}%, Call {call_wing_pct:.1f}% (adequate buffer)"))
+            elif min_wing_pct >= 1.0:
+                checks.append(("Wing distance", "⚠️", 
+                              f"Put {put_wing_pct:.1f}%, Call {call_wing_pct:.1f}% (tight wings)"))
+            else:
+                checks.append(("Wing distance", "❌", 
+                              f"Put {put_wing_pct:.1f}%, Call {call_wing_pct:.1f}% (very tight, high risk)"))
 
     df = pd.DataFrame(checks, columns=["Check", "Status", "Notes"])
     return df, flags
@@ -4536,13 +4597,19 @@ with tabs[7]:
                 "Liquidity sub‑par (OI/spread). Consider a different strike/expiry/ticker.")
         if flags["tenor_warn"]:
             warn_msgs.append(
-                "Tenor outside the sweet spot. Consider 21–45 DTE (CSP/CC) or 30–60 DTE (Collar).")
+                "Tenor outside the sweet spot. Consider 21–45 DTE (CSP/CC) or 30–60 DTE (Collar/IC).")
         if flags["excess_negative"]:
             warn_msgs.append(
                 "Excess ROI vs T‑bills is negative. Consider passing on this trade.")
         if flags["cushion_low"]:
             warn_msgs.append(
                 "Sigma cushion is thin (< 1.0σ). Consider moving further OTM or extending tenor.")
+        if flags.get("earnings_risk", False):
+            warn_msgs.append(
+                "Earnings announcement within cycle — expect elevated volatility and gap risk.")
+        if flags.get("below_cost_basis", False):
+            warn_msgs.append(
+                "CC strike is below cost basis — assignment would lock in a loss. Consider higher strike or waiting.")
         if warn_msgs:
             st.subheader("Notes & Cautions")
             for m in warn_msgs:
