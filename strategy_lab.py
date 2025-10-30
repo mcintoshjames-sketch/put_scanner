@@ -2747,6 +2747,88 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
                 checks.append(("Wing distance", "❌", 
                               f"Put {put_wing_pct:.1f}%, Call {call_wing_pct:.1f}% (very tight, high risk)"))
 
+    elif strategy == "BULL_PUT_SPREAD":
+        # Bull Put Spread specific checks
+        sell_strike = float(_series_get(row, "SellStrike", float("nan")))
+        buy_strike = float(_series_get(row, "BuyStrike", float("nan")))
+        net_credit = float(_series_get(row, "NetCredit", float("nan")))
+        
+        # Check spread width
+        if sell_strike == sell_strike and buy_strike == buy_strike:
+            spread_width = sell_strike - buy_strike
+            spread_width_pct = (spread_width / S) * 100.0 if S > 0 else 0.0
+            if 2.0 <= spread_width_pct <= 10.0:
+                checks.append(("Spread width", "✅", f"${spread_width:.0f} ({spread_width_pct:.1f}% of price)"))
+            elif spread_width_pct < 2.0:
+                checks.append(("Spread width", "⚠️", f"${spread_width:.0f} ({spread_width_pct:.1f}% too narrow)"))
+            else:
+                checks.append(("Spread width", "⚠️", f"${spread_width:.0f} ({spread_width_pct:.1f}% very wide)"))
+        
+        # Check risk/reward ratio
+        if net_credit == net_credit and sell_strike == sell_strike and buy_strike == buy_strike:
+            spread_width = sell_strike - buy_strike
+            max_loss = spread_width - net_credit
+            max_profit = net_credit
+            risk_reward = max_profit / max_loss if max_loss > 0 else 0.0
+            if risk_reward >= 0.4:
+                checks.append(("Risk/reward ratio", "✅", f"{risk_reward:.2f} (profit ${max_profit:.2f} / risk ${max_loss:.2f})"))
+            elif risk_reward >= 0.25:
+                checks.append(("Risk/reward ratio", "⚠️", f"{risk_reward:.2f} (acceptable, prefer ≥0.4)"))
+            else:
+                checks.append(("Risk/reward ratio", "❌", f"{risk_reward:.2f} (poor, prefer ≥0.4)"))
+        
+        # Delta target check (short put delta should be ~0.20-0.30)
+        delta = float(_series_get(row, "Δ", float("nan")))
+        if delta == delta:
+            delta_abs = abs(delta)
+            if 0.15 <= delta_abs <= 0.30:
+                checks.append(("Δ target (short put)", "✅", f"{delta:.2f} (good POEW ~{(1-delta_abs)*100:.0f}%)"))
+            elif 0.10 <= delta_abs < 0.15:
+                checks.append(("Δ target (short put)", "⚠️", f"{delta:.2f} (too far OTM, low premium)"))
+            else:
+                checks.append(("Δ target (short put)", "⚠️", f"{delta:.2f} (prefer ~0.15-0.30)"))
+
+    elif strategy == "BEAR_CALL_SPREAD":
+        # Bear Call Spread specific checks
+        sell_strike = float(_series_get(row, "SellStrike", float("nan")))
+        buy_strike = float(_series_get(row, "BuyStrike", float("nan")))
+        net_credit = float(_series_get(row, "NetCredit", float("nan")))
+        
+        # Check spread width
+        if sell_strike == sell_strike and buy_strike == buy_strike:
+            spread_width = buy_strike - sell_strike
+            spread_width_pct = (spread_width / S) * 100.0 if S > 0 else 0.0
+            if 2.0 <= spread_width_pct <= 10.0:
+                checks.append(("Spread width", "✅", f"${spread_width:.0f} ({spread_width_pct:.1f}% of price)"))
+            elif spread_width_pct < 2.0:
+                checks.append(("Spread width", "⚠️", f"${spread_width:.0f} ({spread_width_pct:.1f}% too narrow)"))
+            else:
+                checks.append(("Spread width", "⚠️", f"${spread_width:.0f} ({spread_width_pct:.1f}% very wide)"))
+        
+        # Check risk/reward ratio
+        if net_credit == net_credit and sell_strike == sell_strike and buy_strike == buy_strike:
+            spread_width = buy_strike - sell_strike
+            max_loss = spread_width - net_credit
+            max_profit = net_credit
+            risk_reward = max_profit / max_loss if max_loss > 0 else 0.0
+            if risk_reward >= 0.4:
+                checks.append(("Risk/reward ratio", "✅", f"{risk_reward:.2f} (profit ${max_profit:.2f} / risk ${max_loss:.2f})"))
+            elif risk_reward >= 0.25:
+                checks.append(("Risk/reward ratio", "⚠️", f"{risk_reward:.2f} (acceptable, prefer ≥0.4)"))
+            else:
+                checks.append(("Risk/reward ratio", "❌", f"{risk_reward:.2f} (poor, prefer ≥0.4)"))
+        
+        # Delta target check (short call delta should be ~0.20-0.30)
+        delta = float(_series_get(row, "Δ", float("nan")))
+        if delta == delta:
+            delta_abs = abs(delta)
+            if 0.15 <= delta_abs <= 0.30:
+                checks.append(("Δ target (short call)", "✅", f"{delta:.2f} (good POEW ~{(1-delta_abs)*100:.0f}%)"))
+            elif 0.10 <= delta_abs < 0.15:
+                checks.append(("Δ target (short call)", "⚠️", f"{delta:.2f} (too far OTM, low premium)"))
+            else:
+                checks.append(("Δ target (short call)", "⚠️", f"{delta:.2f} (prefer ~0.15-0.30)"))
+
     df = pd.DataFrame(checks, columns=["Check", "Status", "Notes"])
     return df, flags
 
@@ -2915,6 +2997,106 @@ def build_runbook(strategy, row, *, contracts=1, capture_pct=0.70,
             "ADJUSTMENTS (if one side threatened):",
             "• Roll threatened spread: close losing spread, open new spread at better strikes/later expiry",
             "• Convert to vertical spread: close unthreatened side, manage remaining spread"
+        ]
+
+    elif strategy == "BULL_PUT_SPREAD":
+        Ks = float(_series_get(row, "SellStrike"))
+        Kb = float(_series_get(row, "BuyStrike"))
+        net_credit_ps = float(_series_get(row, "NetCredit"))
+        credit_pc = net_credit_ps * 100.0
+        
+        # Calculate max profit and max loss
+        spread_width = Ks - Kb
+        max_loss = (spread_width - net_credit_ps) * 100.0
+        max_profit = credit_pc
+        be = Ks - net_credit_ps
+        
+        # Profit capture target
+        tgt_close_ps = max(0.05, net_credit_ps * (1.0 - capture_pct))
+        
+        lines += [
+            f"# RUNBOOK — BULL PUT SPREAD ({ticker})",
+            hr,
+            "ENTRY (2-leg vertical spread):",
+            f"• Sell to Open  {contracts}  {ticker}  {exp}  {int(Ks)} PUT   (short put - collect premium)",
+            f"• Buy to Open   {contracts}  {ticker}  {exp}  {int(Kb)} PUT   (long put - define max loss)",
+            f"  Order: NET CREDIT, ≥ {_fmt_usd(net_credit_ps)} per share (≥ {_fmt_usd(credit_pc)} per contract), GTC",
+            f"  Capital required: {_fmt_usd(max_loss * contracts, 0)} (max risk per spread)",
+            f"  Max profit: {_fmt_usd(max_profit * contracts, 0)} (if {ticker} stays above {_fmt_usd(Ks)})",
+            f"  Max loss: {_fmt_usd(max_loss * contracts, 0)} (if {ticker} drops below {_fmt_usd(Kb)})",
+            f"  Breakeven: {_fmt_usd(be)}",
+            "",
+            "PROFIT‑TAKING TRIGGER(S):",
+            f"• Close when spread mark ≤ {_fmt_usd(tgt_close_ps)} per share  (≈ {int(capture_pct*100)}% credit captured), OR",
+            "• Close/roll at ~7–10 DTE if ≥50% credit captured, OR",
+            "• Close at ~21 DTE if ≥75% credit captured.",
+            "",
+            "RISK CLOSE‑OUT TRIGGER(S):",
+            f"• Underlying drops to within $2 of short strike: ≤ {_fmt_usd(Ks + 2)}",
+            f"• Underlying breaches breakeven: ≤ {_fmt_usd(be)}",
+            "• Total P&L reaches 2× max profit (close to avoid max loss)",
+            "• Consider rolling down/out: close current spread, open new one with lower strikes or later expiry",
+            "",
+            "EXIT ORDERS (close both legs):",
+            f"• Profit‑take:  Close entire spread for NET DEBIT ≤ {_fmt_usd(tgt_close_ps)} per share, GTC",
+            f"  - BTC  {contracts}  {ticker}  {exp}  {int(Ks)} PUT",
+            f"  - STC  {contracts}  {ticker}  {exp}  {int(Kb)} PUT",
+            "• Risk close‑out: Close at market or use STOP‑LIMIT for full spread.",
+            "",
+            "ROLLING (if under pressure):",
+            f"• Roll down/out: Close current {int(Ks)}/{int(Kb)} spread, open new spread further OTM or later expiry",
+            "• Target: collect additional credit while reducing breach risk",
+            "• Keep spread width consistent (same risk profile)"
+        ]
+
+    elif strategy == "BEAR_CALL_SPREAD":
+        Ks = float(_series_get(row, "SellStrike"))
+        Kb = float(_series_get(row, "BuyStrike"))
+        net_credit_ps = float(_series_get(row, "NetCredit"))
+        credit_pc = net_credit_ps * 100.0
+        
+        # Calculate max profit and max loss
+        spread_width = Kb - Ks
+        max_loss = (spread_width - net_credit_ps) * 100.0
+        max_profit = credit_pc
+        be = Ks + net_credit_ps
+        
+        # Profit capture target
+        tgt_close_ps = max(0.05, net_credit_ps * (1.0 - capture_pct))
+        
+        lines += [
+            f"# RUNBOOK — BEAR CALL SPREAD ({ticker})",
+            hr,
+            "ENTRY (2-leg vertical spread):",
+            f"• Sell to Open  {contracts}  {ticker}  {exp}  {int(Ks)} CALL  (short call - collect premium)",
+            f"• Buy to Open   {contracts}  {ticker}  {exp}  {int(Kb)} CALL  (long call - define max loss)",
+            f"  Order: NET CREDIT, ≥ {_fmt_usd(net_credit_ps)} per share (≥ {_fmt_usd(credit_pc)} per contract), GTC",
+            f"  Capital required: {_fmt_usd(max_loss * contracts, 0)} (max risk per spread)",
+            f"  Max profit: {_fmt_usd(max_profit * contracts, 0)} (if {ticker} stays below {_fmt_usd(Ks)})",
+            f"  Max loss: {_fmt_usd(max_loss * contracts, 0)} (if {ticker} rises above {_fmt_usd(Kb)})",
+            f"  Breakeven: {_fmt_usd(be)}",
+            "",
+            "PROFIT‑TAKING TRIGGER(S):",
+            f"• Close when spread mark ≤ {_fmt_usd(tgt_close_ps)} per share  (≈ {int(capture_pct*100)}% credit captured), OR",
+            "• Close/roll at ~7–10 DTE if ≥50% credit captured, OR",
+            "• Close at ~21 DTE if ≥75% credit captured.",
+            "",
+            "RISK CLOSE‑OUT TRIGGER(S):",
+            f"• Underlying rises to within $2 of short strike: ≥ {_fmt_usd(Ks - 2)}",
+            f"• Underlying breaches breakeven: ≥ {_fmt_usd(be)}",
+            "• Total P&L reaches 2× max profit (close to avoid max loss)",
+            "• Consider rolling up/out: close current spread, open new one with higher strikes or later expiry",
+            "",
+            "EXIT ORDERS (close both legs):",
+            f"• Profit‑take:  Close entire spread for NET DEBIT ≤ {_fmt_usd(tgt_close_ps)} per share, GTC",
+            f"  - BTC  {contracts}  {ticker}  {exp}  {int(Ks)} CALL",
+            f"  - STC  {contracts}  {ticker}  {exp}  {int(Kb)} CALL",
+            "• Risk close‑out: Close at market or use STOP‑LIMIT for full spread.",
+            "",
+            "ROLLING (if under pressure):",
+            f"• Roll up/out: Close current {int(Ks)}/{int(Kb)} spread, open new spread further OTM or later expiry",
+            "• Target: collect additional credit while reducing breach risk",
+            "• Keep spread width consistent (same risk profile)"
         ]
 
     return "\n".join(lines)
