@@ -838,6 +838,36 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
                          - Pp + np.maximum(0.0, Kp - S_T)
                          + div_ps_period)
         capital_per_share = S0
+    
+    elif strategy == "IRON_CONDOR":
+        # Iron Condor: Sell OTM put spread + Sell OTM call spread
+        # Profit if stock stays between short strikes
+        Kps = float(params["put_short_strike"])   # Short put strike
+        Kpl = float(params["put_long_strike"])    # Long put strike (lower)
+        Kcs = float(params["call_short_strike"])  # Short call strike
+        Kcl = float(params["call_long_strike"])   # Long call strike (higher)
+        net_credit = float(params["net_credit"])
+        
+        # P&L calculation for Iron Condor
+        # Start with net credit received
+        pnl_per_share = np.full_like(S_T, net_credit)
+        
+        # Subtract put spread loss if price < short put strike
+        # Max loss on put side: (Kps - Kpl) when S_T <= Kpl
+        put_spread_loss = np.maximum(0.0, Kps - S_T) - np.maximum(0.0, Kpl - S_T)
+        pnl_per_share -= put_spread_loss
+        
+        # Subtract call spread loss if price > short call strike  
+        # Max loss on call side: (Kcl - Kcs) when S_T >= Kcl
+        call_spread_loss = np.maximum(0.0, S_T - Kcs) - np.maximum(0.0, S_T - Kcl)
+        pnl_per_share -= call_spread_loss
+        
+        # Capital = max loss = (width of wider spread - net credit)
+        put_spread_width = Kps - Kpl
+        call_spread_width = Kcl - Kcs
+        max_spread_width = max(put_spread_width, call_spread_width)
+        capital_per_share = max_spread_width - net_credit
+    
     else:
         raise ValueError("Unknown strategy for MC")
 
@@ -853,6 +883,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         "pnl_paths": pnl_contract,
         "roi_ann_paths": roi_ann,
         "collateral": capital_contract,
+        "capital_per_share": capital_per_share,
         "days": days,
         "paths": int(n_paths),
     }
@@ -860,16 +891,28 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         arr_clean = arr[np.isfinite(arr)]
         if arr_clean.size == 0:
             out[f"{label}_expected"] = float("nan")
+            out[f"{label}_std"] = float("nan")
             out[f"{label}_p5"] = float("nan")
             out[f"{label}_p50"] = float("nan")
             out[f"{label}_p95"] = float("nan")
             out[f"{label}_min"] = float("nan")
         else:
             out[f"{label}_expected"] = float(np.mean(arr_clean))
+            out[f"{label}_std"] = float(np.std(arr_clean))
             out[f"{label}_p5"] = float(np.percentile(arr_clean, 5))
             out[f"{label}_p50"] = float(np.percentile(arr_clean, 50))
             out[f"{label}_p95"] = float(np.percentile(arr_clean, 95))
             out[f"{label}_min"] = float(np.min(arr_clean))
+    
+    # Calculate Sharpe ratio
+    pnl_clean = pnl_contract[np.isfinite(pnl_contract)]
+    if pnl_clean.size > 0 and np.std(pnl_clean) > 0:
+        # Assuming risk-free rate ~= 0 for simplicity (or use mu)
+        sharpe = np.mean(pnl_clean) / np.std(pnl_clean) * np.sqrt(365.0 / days)
+        out["sharpe"] = float(sharpe)
+    else:
+        out["sharpe"] = float("nan")
+    
     return out
 
 
@@ -3975,8 +4018,22 @@ with tabs[5]:
             mc = mc_pnl("COLLAR", params, n_paths=int(
                 paths), mu=float(mc_drift), seed=seed)
         else:  # IRON_CONDOR
-            st.warning("⚠️ Monte Carlo simulation not yet implemented for Iron Condor strategy. Coming soon!")
-            mc = None
+            # Extract IV from Iron Condor row
+            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            
+            # Build params dict with all required Iron Condor parameters
+            params = dict(
+                S0=execution_price,  # Use overridden price
+                days=int(days_for_mc),
+                iv=iv,
+                put_short_strike=float(row["PutShortStrike"]),
+                put_long_strike=float(row["PutLongStrike"]),
+                call_short_strike=float(row["CallShortStrike"]),
+                call_long_strike=float(row["CallLongStrike"]),
+                net_credit=float(row["NetCredit"])
+            )
+            mc = mc_pnl("IRON_CONDOR", params, n_paths=int(
+                paths), mu=float(mc_drift), seed=seed)
 
         # Render outputs (only if mc simulation was run)
         if mc is not None:
@@ -4054,7 +4111,7 @@ with tabs[7]:
         st.info("Select a strategy/contract above and ensure scans have results.")
     else:
         base = {"CSP": df_csp, "CC": df_cc,
-                "COLLAR": df_collar}[strat_choice_rb]
+                "COLLAR": df_collar, "IRON_CONDOR": df_iron_condor}[strat_choice_rb]
 
         # Inputs for checks
         thresholds = dict(
