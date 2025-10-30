@@ -1655,7 +1655,10 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
         else:
             balance_score = 0.0
         
-        score = (0.40 * roi_ann +
+        # NOTE: roi_ann is already a large value (e.g., 7.77 for 777% ROI)
+        # Other strategies use fractional values (0.10 for 10% ROI) in scoring
+        # To make scores comparable, use roi_cycle (fractional) instead
+        score = (0.40 * roi_cycle +
                  0.30 * balance_score +
                  0.20 * cushion_score +
                  0.10 * liq_score)
