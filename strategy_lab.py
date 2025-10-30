@@ -1417,7 +1417,7 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
     return df
 
 
-def analyze_iron_condor(ticker, *, min_days=0, days_limit, min_oi, max_spread,
+def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
                         min_roi, min_cushion, earn_window, risk_free,
                         spread_width_put=5.0, spread_width_call=5.0,
                         target_delta_short=0.16, bill_yield=0.0):
@@ -2630,7 +2630,7 @@ with st.sidebar:
 
     col_days1, col_days2 = st.columns(2)
     with col_days1:
-        min_days = st.slider("Min Days to Expiry", 0, 60,
+        min_days = st.slider("Min Days to Expiry", 1, 60,
                              10, step=1, key="min_days")
     with col_days2:
         days_limit = st.slider("Max Days to Expiry", 7,

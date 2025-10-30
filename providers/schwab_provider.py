@@ -28,12 +28,10 @@ class SchwabProvider(OptionsProvider):
     def chain_snapshot_df(self, symbol: str, expiration: str) -> pd.DataFrame:
         """
         Get options chain for a specific expiration.
-        Returns only puts for put scanner compatibility.
+        Returns both calls and puts (changed to support Iron Condor and other multi-leg strategies).
         """
         df = self.client.chain_snapshot_df(symbol, expiration)
-        # Filter to puts only
-        if not df.empty:
-            df = df[df["type"] == "put"].copy()
+        # Return both calls and puts (removed puts-only filter for Iron Condor support)
         return df
 
     def get_earnings_date(self, symbol: str) -> Optional[date]:
