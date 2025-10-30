@@ -868,6 +868,48 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         max_spread_width = max(put_spread_width, call_spread_width)
         capital_per_share = max_spread_width - net_credit
     
+    elif strategy == "BULL_PUT_SPREAD":
+        # Bull Put Spread: SELL higher strike put + BUY lower strike put = NET CREDIT
+        # Profit if stock stays above sell strike
+        sell_strike = float(params["sell_strike"])  # Short put (higher strike)
+        buy_strike = float(params["buy_strike"])    # Long put (lower strike)
+        net_credit = float(params["net_credit"])
+        
+        # P&L calculation for Bull Put Spread
+        # Start with net credit received
+        pnl_per_share = np.full_like(S_T, net_credit)
+        
+        # Subtract spread loss if price < sell strike
+        # Loss = max(0, sell_strike - S_T) - max(0, buy_strike - S_T)
+        # This simplifies to: min(sell_strike - S_T, sell_strike - buy_strike) when S_T < sell_strike
+        spread_loss = np.maximum(0.0, sell_strike - S_T) - np.maximum(0.0, buy_strike - S_T)
+        pnl_per_share -= spread_loss
+        
+        # Capital at risk = max loss = spread width - net credit
+        spread_width = sell_strike - buy_strike
+        capital_per_share = spread_width - net_credit
+    
+    elif strategy == "BEAR_CALL_SPREAD":
+        # Bear Call Spread: SELL lower strike call + BUY higher strike call = NET CREDIT
+        # Profit if stock stays below sell strike
+        sell_strike = float(params["sell_strike"])  # Short call (lower strike)
+        buy_strike = float(params["buy_strike"])    # Long call (higher strike)
+        net_credit = float(params["net_credit"])
+        
+        # P&L calculation for Bear Call Spread
+        # Start with net credit received
+        pnl_per_share = np.full_like(S_T, net_credit)
+        
+        # Subtract spread loss if price > sell strike
+        # Loss = max(0, S_T - sell_strike) - max(0, S_T - buy_strike)
+        # This simplifies to: min(S_T - sell_strike, buy_strike - sell_strike) when S_T > sell_strike
+        spread_loss = np.maximum(0.0, S_T - sell_strike) - np.maximum(0.0, S_T - buy_strike)
+        pnl_per_share -= spread_loss
+        
+        # Capital at risk = max loss = spread width - net credit
+        spread_width = buy_strike - sell_strike
+        capital_per_share = spread_width - net_credit
+    
     else:
         raise ValueError("Unknown strategy for MC")
 
@@ -5789,9 +5831,10 @@ with tabs[7]:
     with colC:
         # Get strategy choice first to set appropriate drift default
         strat_choice_preview, _ = _get_selected_row()
-        # CSP: 0% drift (cash position, no equity exposure)
+        # CSP/Credit Spreads: 0% drift (cash position, no equity exposure)
         # CC/Collar: 7% drift (realistic equity market assumption)
-        default_drift = 0.00 if strat_choice_preview == "CSP" else 0.07
+        # Iron Condor: 0% drift (no stock ownership)
+        default_drift = 0.00 if strat_choice_preview in ["CSP", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"] else 0.07
         
         mc_drift = st.number_input(
             "Drift (annual, decimal)", 
@@ -5799,7 +5842,7 @@ with tabs[7]:
             step=0.01, 
             format="%.2f", 
             key="mc_drift_input",
-            help="Expected annual return: 0% for CSP (cash-secured), 7% for CC/Collar (equity drift)")
+            help="Expected annual return: 0% for CSP/Credit Spreads (no stock), 7% for CC/Collar (equity drift)")
     with colD:
         seed = st.number_input("Seed (0 = random)", value=0,
                                step=1, min_value=0, key="mc_seed_input")
@@ -5971,7 +6014,7 @@ with tabs[7]:
             )
             mc = mc_pnl("COLLAR", params, n_paths=int(
                 paths), mu=float(mc_drift), seed=seed)
-        else:  # IRON_CONDOR
+        elif strat_choice == "IRON_CONDOR":
             # Extract IV from Iron Condor row
             iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
             
@@ -5988,6 +6031,44 @@ with tabs[7]:
             )
             mc = mc_pnl("IRON_CONDOR", params, n_paths=int(
                 paths), mu=float(mc_drift), seed=seed)
+        
+        elif strat_choice == "BULL_PUT_SPREAD":
+            # Bull Put Spread: SELL higher put + BUY lower put = NET CREDIT
+            # No stock ownership, so default drift = 0.0
+            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            
+            params = dict(
+                S0=execution_price,  # Use overridden price
+                days=int(days_for_mc),
+                iv=iv,
+                sell_strike=float(row["SellStrike"]),
+                buy_strike=float(row["BuyStrike"]),
+                net_credit=float(row["NetCredit"])
+            )
+            # Use 0% drift for credit spreads (no stock ownership)
+            mc = mc_pnl("BULL_PUT_SPREAD", params, n_paths=int(paths), 
+                       mu=0.0, seed=seed)
+        
+        elif strat_choice == "BEAR_CALL_SPREAD":
+            # Bear Call Spread: SELL lower call + BUY higher call = NET CREDIT
+            # No stock ownership, so default drift = 0.0
+            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            
+            params = dict(
+                S0=execution_price,  # Use overridden price
+                days=int(days_for_mc),
+                iv=iv,
+                sell_strike=float(row["SellStrike"]),
+                buy_strike=float(row["BuyStrike"]),
+                net_credit=float(row["NetCredit"])
+            )
+            # Use 0% drift for credit spreads (no stock ownership)
+            mc = mc_pnl("BEAR_CALL_SPREAD", params, n_paths=int(paths), 
+                       mu=0.0, seed=seed)
+        
+        else:
+            st.error(f"Unknown strategy: {strat_choice}")
+            mc = None
 
         # Render outputs (only if mc simulation was run)
         if mc is not None:
@@ -6430,6 +6511,124 @@ with tabs[11]:
             )
             # Use neutral drift for Iron Condor (0% annual = market neutral)
             mc = mc_pnl("IRON_CONDOR", params, n_paths=int(paths), mu=0.0, seed=None)
+
+        elif strat_choice == "BULL_PUT_SPREAD":
+            # Bull Put Spread structure
+            sell_strike = float(_safe_float(row.get("SellStrike")))
+            buy_strike = float(_safe_float(row.get("BuyStrike")))
+            net_credit = float(_safe_float(row.get("NetCredit")))
+            
+            # Calculate spread width and capital requirements
+            spread_width = sell_strike - buy_strike
+            capital_per_share = spread_width - net_credit
+            capital = capital_per_share * 100.0
+            
+            # Calculate max profit and max loss
+            max_profit = net_credit * 100.0
+            max_loss = capital
+            
+            # Calculate breakeven
+            breakeven = sell_strike - net_credit
+            
+            # Calculate profit capture targets
+            target_50_pct = net_credit * 0.50
+            target_75_pct = net_credit * 0.25
+            
+            base_rows = [
+                ("Strategy", "BULL PUT SPREAD"),
+                ("Ticker", row.get("Ticker")),
+                ("Price", f"${price:,.2f}"),
+                ("Sell Strike (short put)", f"${sell_strike:.2f}"),
+                ("Buy Strike (long put)", f"${buy_strike:.2f}"),
+                ("Spread Width", f"${spread_width:.2f}"),
+                ("Exp", row.get("Exp")),
+                ("Days", f"{days}"),
+                ("Net Credit", f"${net_credit:.2f}"),
+                ("Capital Required", f"${capital:,.0f}"),
+                ("Max Profit", f"${max_profit:.0f}"),
+                ("Max Loss", f"${max_loss:.0f}"),
+                ("Breakeven", f"${breakeven:.2f}"),
+                ("IV", f"{iv_raw:.2f}%" if iv_raw == iv_raw and iv_raw > 0 else "n/a"),
+                ("Score", f"{row.get('Score'):.2f}" if row.get('Score') == row.get('Score') else "n/a"),
+                ("—", "—"),
+                ("Exit: 50% profit", f"Close spread for ≤ ${target_50_pct:.2f}"),
+                ("Exit: 75% profit", f"Close spread for ≤ ${target_75_pct:.2f}"),
+            ]
+            st.subheader("Structure summary")
+            st.table(pd.DataFrame(base_rows, columns=["Field", "Value"]))
+
+            paths = 50000
+            days_for_mc = max(1, days)
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0.0) else 0.20
+            params = dict(
+                S0=price, 
+                days=days_for_mc, 
+                iv=iv_for_calc,
+                sell_strike=sell_strike,
+                buy_strike=buy_strike,
+                net_credit=net_credit
+            )
+            # Use neutral drift for credit spreads (0% = no stock ownership)
+            mc = mc_pnl("BULL_PUT_SPREAD", params, n_paths=int(paths), mu=0.0, seed=None)
+
+        elif strat_choice == "BEAR_CALL_SPREAD":
+            # Bear Call Spread structure
+            sell_strike = float(_safe_float(row.get("SellStrike")))
+            buy_strike = float(_safe_float(row.get("BuyStrike")))
+            net_credit = float(_safe_float(row.get("NetCredit")))
+            
+            # Calculate spread width and capital requirements
+            spread_width = buy_strike - sell_strike
+            capital_per_share = spread_width - net_credit
+            capital = capital_per_share * 100.0
+            
+            # Calculate max profit and max loss
+            max_profit = net_credit * 100.0
+            max_loss = capital
+            
+            # Calculate breakeven
+            breakeven = sell_strike + net_credit
+            
+            # Calculate profit capture targets
+            target_50_pct = net_credit * 0.50
+            target_75_pct = net_credit * 0.25
+            
+            base_rows = [
+                ("Strategy", "BEAR CALL SPREAD"),
+                ("Ticker", row.get("Ticker")),
+                ("Price", f"${price:,.2f}"),
+                ("Sell Strike (short call)", f"${sell_strike:.2f}"),
+                ("Buy Strike (long call)", f"${buy_strike:.2f}"),
+                ("Spread Width", f"${spread_width:.2f}"),
+                ("Exp", row.get("Exp")),
+                ("Days", f"{days}"),
+                ("Net Credit", f"${net_credit:.2f}"),
+                ("Capital Required", f"${capital:,.0f}"),
+                ("Max Profit", f"${max_profit:.0f}"),
+                ("Max Loss", f"${max_loss:.0f}"),
+                ("Breakeven", f"${breakeven:.2f}"),
+                ("IV", f"{iv_raw:.2f}%" if iv_raw == iv_raw and iv_raw > 0 else "n/a"),
+                ("Score", f"{row.get('Score'):.2f}" if row.get('Score') == row.get('Score') else "n/a"),
+                ("—", "—"),
+                ("Exit: 50% profit", f"Close spread for ≤ ${target_50_pct:.2f}"),
+                ("Exit: 75% profit", f"Close spread for ≤ ${target_75_pct:.2f}"),
+            ]
+            st.subheader("Structure summary")
+            st.table(pd.DataFrame(base_rows, columns=["Field", "Value"]))
+
+            paths = 50000
+            days_for_mc = max(1, days)
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0.0) else 0.20
+            params = dict(
+                S0=price, 
+                days=days_for_mc, 
+                iv=iv_for_calc,
+                sell_strike=sell_strike,
+                buy_strike=buy_strike,
+                net_credit=net_credit
+            )
+            # Use neutral drift for credit spreads (0% = no stock ownership)
+            mc = mc_pnl("BEAR_CALL_SPREAD", params, n_paths=int(paths), mu=0.0, seed=None)
 
         else:
             st.error(f"Unknown strategy: {strat_choice}")
