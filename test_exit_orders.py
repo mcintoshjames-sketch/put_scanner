@@ -102,10 +102,89 @@ def test_cc_exit_order():
     return exit_order
 
 
+def test_collar_exit_order():
+    """Test Collar 2-leg exit order generation"""
+    print("\n" + "="*60)
+    print("TEST 3: Collar Exit Order (2-Leg)")
+    print("="*60)
+    
+    trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
+    
+    # Entry: Collar with call premium and put cost
+    # SELL CALL: $575 @ $3.00
+    # BUY PUT: $540 @ $1.50
+    # Net Credit: $1.50
+    call_entry = 3.00
+    put_entry = 1.50
+    profit_capture_pct = 50  # 50% profit target on call
+    
+    # Calculate call exit price
+    call_exit = max(0.05, call_entry * (1.0 - profit_capture_pct / 100.0))
+    expected_call_exit = 3.00 * 0.5  # $1.50
+    
+    # Put exit at 50% of cost
+    put_exit = put_entry * 0.5  # $0.75
+    
+    print(f"\nEntry: SELL $575 CALL @ ${call_entry}, BUY $540 PUT @ ${put_entry}")
+    print(f"Net Credit: ${call_entry - put_entry}")
+    print(f"Profit Target: {profit_capture_pct}% on call leg")
+    print(f"Call Exit: ${call_exit:.2f} (expected: ${expected_call_exit:.2f})")
+    print(f"Put Exit: ${put_exit:.2f} (recover 50% of cost)")
+    
+    # Create call exit order (BUY TO CLOSE)
+    exit_order_call = trader.create_option_order(
+        symbol="SPY",
+        expiration="2025-11-15",
+        strike=575.0,
+        option_type="CALL",
+        action="BUY_TO_CLOSE",
+        quantity=1,
+        order_type="LIMIT",
+        limit_price=call_exit,
+        duration="GTC"
+    )
+    
+    # Create put exit order (SELL TO CLOSE)
+    exit_order_put = trader.create_option_order(
+        symbol="SPY",
+        expiration="2025-11-15",
+        strike=540.0,
+        option_type="PUT",
+        action="SELL_TO_CLOSE",
+        quantity=1,
+        order_type="LIMIT",
+        limit_price=put_exit,
+        duration="GTC"
+    )
+    
+    # Validate call exit order
+    assert exit_order_call["orderLegCollection"][0]["instruction"] == "BUY_TO_CLOSE"
+    assert exit_order_call["orderType"] == "LIMIT"
+    assert exit_order_call["duration"] == "GTC"
+    assert exit_order_call["price"] == call_exit
+    
+    # Validate put exit order
+    assert exit_order_put["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
+    assert exit_order_put["orderType"] == "LIMIT"
+    assert exit_order_put["duration"] == "GTC"
+    assert exit_order_put["price"] == put_exit
+    
+    call_profit = (call_entry - call_exit) * 100
+    put_profit = (put_exit - put_entry) * 100  # Negative (cost recovery)
+    total_profit = call_profit + put_profit
+    
+    print(f"Call Profit at Exit: ${call_profit:.2f} per contract")
+    print(f"Put Cost Recovery: ${put_profit:.2f} per contract")
+    print(f"Total Profit: ${total_profit:.2f} per contract")
+    print(f"✅ Collar exit orders validated (both legs)")
+    
+    return (exit_order_call, exit_order_put)
+
+
 def test_iron_condor_exit_order():
     """Test Iron Condor 4-leg exit order generation"""
     print("\n" + "="*60)
-    print("TEST 3: Iron Condor Exit Order (4-Leg)")
+    print("TEST 4: Iron Condor Exit Order (4-Leg)")
     print("="*60)
     
     trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -174,7 +253,7 @@ def test_iron_condor_exit_order():
 def test_profit_targets():
     """Test various profit target percentages"""
     print("\n" + "="*60)
-    print("TEST 4: Profit Target Calculations")
+    print("TEST 5: Profit Target Calculations")
     print("="*60)
     
     entry_premium = 5.00
@@ -198,7 +277,7 @@ def test_profit_targets():
 def test_order_export():
     """Test that orders are properly exported to files"""
     print("\n" + "="*60)
-    print("TEST 5: Order Export to Files")
+    print("TEST 6: Order Export to Files")
     print("="*60)
     
     trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -246,7 +325,7 @@ def test_order_export():
 def test_gtc_duration():
     """Test that exit orders default to GTC (Good Till Canceled)"""
     print("\n" + "="*60)
-    print("TEST 6: GTC Duration for 'Set and Forget'")
+    print("TEST 7: GTC Duration for 'Set and Forget'")
     print("="*60)
     
     trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -286,6 +365,7 @@ def main():
         # Run all tests
         test_csp_exit_order()
         test_cc_exit_order()
+        test_collar_exit_order()
         test_iron_condor_exit_order()
         test_profit_targets()
         test_order_export()
@@ -293,11 +373,12 @@ def main():
         
         # Summary
         print("\n" + "="*70)
-        print("✅ ALL TESTS PASSED (6/6)")
+        print("✅ ALL TESTS PASSED (7/7)")
         print("="*70)
         print("\nExit order generation validated for:")
         print("  ✓ Cash-Secured Put (CSP) - BUY TO CLOSE single leg")
         print("  ✓ Covered Call (CC) - BUY TO CLOSE single leg")
+        print("  ✓ Collar - BUY TO CLOSE call + SELL TO CLOSE put")
         print("  ✓ Iron Condor (IC) - Close all 4 legs as NET DEBIT")
         print("  ✓ Profit target calculations (25%, 50%, 75%, 90%)")
         print("  ✓ Order export with metadata")
