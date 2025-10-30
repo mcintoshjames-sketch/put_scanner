@@ -4126,7 +4126,7 @@ with tabs[4]:
                 
                 # Generate order button (dry-run export)
                 with col_export:
-                    if st.button("📥 Generate Order File", type="primary", use_container_width=True):
+                    if st.button("📥 Generate Order Files", type="primary", use_container_width=True):
                         try:
                             from providers.schwab_trading import SchwabTrader, format_order_summary
                             
@@ -4135,6 +4135,16 @@ with tabs[4]:
                                 days_val = float(days_to_earnings)
                                 if abs(days_val) <= earnings_warning_threshold:
                                     st.warning(f"⚠️ Note: Earnings in {int(abs(days_val))} days")
+                            
+                            # Get profit capture percentage from user
+                            profit_capture_pct = st.slider(
+                                "Profit capture target for exit order",
+                                min_value=25,
+                                max_value=100,
+                                value=50,
+                                step=5,
+                                help="Exit when this % of max profit is captured (standard: 50-75%)"
+                            )
                             
                             # Initialize trader in dry-run mode
                             trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -4217,24 +4227,236 @@ with tabs[4]:
                                 result = trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
                                 
                                 if result['status'] == 'exported':
-                                    st.success(f"✅ Order exported successfully!")
-                                    st.code(result['filepath'], language=None)
+                                    # Now create the profit-taking exit order
+                                    exit_order = None
+                                    exit_result = None
+                                    profit_capture_decimal = profit_capture_pct / 100.0
                                     
-                                    # Show order summary
-                                    with st.expander("📄 Order Details"):
-                                        st.text(format_order_summary(order))
-                                        st.json(order)
+                                    if selected_strategy == "CSP":
+                                        # Exit: Buy to close at target price
+                                        entry_premium = float(selected['Premium'])
+                                        exit_price = max(0.05, entry_premium * (1.0 - profit_capture_decimal))
+                                        
+                                        exit_order = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            option_type="PUT",
+                                            action="BUY_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=exit_price,
+                                            duration=order_duration
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_premium": entry_premium,
+                                            "exit_price": exit_price,
+                                            "profit_per_contract": (entry_premium - exit_price) * 100
+                                        }
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
                                     
-                                    # Provide download button
-                                    with open(result['filepath'], 'r') as f:
-                                        order_json = f.read()
+                                    elif selected_strategy == "CC":
+                                        # Exit: Buy to close at target price
+                                        entry_premium = float(selected['Premium'])
+                                        exit_price = max(0.05, entry_premium * (1.0 - profit_capture_decimal))
+                                        
+                                        exit_order = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            option_type="CALL",
+                                            action="BUY_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=exit_price,
+                                            duration=order_duration
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_premium": entry_premium,
+                                            "exit_price": exit_price,
+                                            "profit_per_contract": (entry_premium - exit_price) * 100
+                                        }
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
                                     
-                                    st.download_button(
-                                        label="⬇️ Download Order File",
-                                        data=order_json,
-                                        file_name=result['filepath'].split('/')[-1],
-                                        mime="application/json"
-                                    )
+                                    elif selected_strategy == "COLLAR":
+                                        # Exit: Close both legs (BTC call, STC put)
+                                        call_entry = float(selected.get('CallPrem', 0))
+                                        call_exit = max(0.05, call_entry * (1.0 - profit_capture_decimal))
+                                        
+                                        # Create exit for call (BUY TO CLOSE)
+                                        exit_order_call = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['CallStrike']),
+                                            option_type="CALL",
+                                            action="BUY_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=call_exit,
+                                            duration=order_duration
+                                        )
+                                        
+                                        # Create exit for put (SELL TO CLOSE)
+                                        put_entry = float(selected.get('PutPrem', 0))
+                                        put_exit = put_entry * 0.5  # Close put at ~50% of cost
+                                        
+                                        exit_order_put = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['PutStrike']),
+                                            option_type="PUT",
+                                            action="SELL_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=put_exit,
+                                            duration=order_duration
+                                        )
+                                        
+                                        exit_metadata_call = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% call profit capture",
+                                            "leg": "CALL",
+                                            "entry_premium": call_entry,
+                                            "exit_price": call_exit
+                                        }
+                                        exit_metadata_put = {
+                                            **metadata,
+                                            "exit_trigger": "close protective put",
+                                            "leg": "PUT",
+                                            "entry_cost": put_entry,
+                                            "exit_price": put_exit
+                                        }
+                                        
+                                        # Submit both exit orders
+                                        exit_result_call = trader.submit_order(exit_order_call, strategy_type=f"{strategy_type}_exit_call", metadata=exit_metadata_call)
+                                        exit_result_put = trader.submit_order(exit_order_put, strategy_type=f"{strategy_type}_exit_put", metadata=exit_metadata_put)
+                                        exit_result = {"call": exit_result_call, "put": exit_result_put}
+                                    
+                                    elif selected_strategy == "IRON_CONDOR":
+                                        # Exit: Close entire spread (all 4 legs) as net debit
+                                        entry_credit = float(selected['NetCredit'])
+                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                        
+                                        exit_order = trader.create_iron_condor_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            long_put_strike=float(selected['PutLongStrike']),
+                                            short_put_strike=float(selected['PutShortStrike']),
+                                            short_call_strike=float(selected['CallShortStrike']),
+                                            long_call_strike=float(selected['CallLongStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration=order_duration
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
+                                        }
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                    
+                                    # Display success message and files
+                                    st.success(f"✅ Entry and Exit orders generated successfully!")
+                                    
+                                    col_entry, col_exit = st.columns(2)
+                                    
+                                    with col_entry:
+                                        st.write("**📤 ENTRY Order**")
+                                        st.code(result['filepath'], language=None)
+                                        
+                                        # Show order summary
+                                        with st.expander("📄 Entry Order Details"):
+                                            st.text(format_order_summary(order))
+                                            st.json(order)
+                                        
+                                        # Provide download button
+                                        with open(result['filepath'], 'r') as f:
+                                            order_json = f.read()
+                                        
+                                        st.download_button(
+                                            label="⬇️ Download Entry Order",
+                                            data=order_json,
+                                            file_name=result['filepath'].split('/')[-1],
+                                            mime="application/json",
+                                            key="download_entry"
+                                        )
+                                    
+                                    with col_exit:
+                                        if exit_result:
+                                            if isinstance(exit_result, dict) and 'call' in exit_result:
+                                                # Collar has multiple exit orders
+                                                st.write("**📥 EXIT Orders (Collar)**")
+                                                st.code(exit_result['call']['filepath'], language=None)
+                                                st.code(exit_result['put']['filepath'], language=None)
+                                                
+                                                with st.expander("📄 Exit Orders Details"):
+                                                    st.write("**Call Exit:**")
+                                                    st.json(exit_order_call)
+                                                    st.write("**Put Exit:**")
+                                                    st.json(exit_order_put)
+                                                
+                                                # Download buttons
+                                                with open(exit_result['call']['filepath'], 'r') as f:
+                                                    exit_call_json = f.read()
+                                                st.download_button(
+                                                    label="⬇️ Download Call Exit",
+                                                    data=exit_call_json,
+                                                    file_name=exit_result['call']['filepath'].split('/')[-1],
+                                                    mime="application/json",
+                                                    key="download_exit_call"
+                                                )
+                                                
+                                                with open(exit_result['put']['filepath'], 'r') as f:
+                                                    exit_put_json = f.read()
+                                                st.download_button(
+                                                    label="⬇️ Download Put Exit",
+                                                    data=exit_put_json,
+                                                    file_name=exit_result['put']['filepath'].split('/')[-1],
+                                                    mime="application/json",
+                                                    key="download_exit_put"
+                                                )
+                                            else:
+                                                # Single exit order
+                                                st.write(f"**📥 EXIT Order ({profit_capture_pct}% profit target)**")
+                                                st.code(exit_result['filepath'], language=None)
+                                                
+                                                with st.expander("📄 Exit Order Details"):
+                                                    st.text(format_order_summary(exit_order))
+                                                    st.json(exit_order)
+                                                
+                                                # Provide download button
+                                                with open(exit_result['filepath'], 'r') as f:
+                                                    exit_json = f.read()
+                                                
+                                                st.download_button(
+                                                    label="⬇️ Download Exit Order",
+                                                    data=exit_json,
+                                                    file_name=exit_result['filepath'].split('/')[-1],
+                                                    mime="application/json",
+                                                    key="download_exit"
+                                                )
+                                        else:
+                                            st.info("No exit order generated")
+                                    
+                                    # Instructions
+                                    st.divider()
+                                    st.info("""
+                                    **📋 "Set and Forget" Instructions:**
+                                    
+                                    1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
+                                    2. **Wait for fill confirmation** before proceeding
+                                    3. **Submit EXIT order immediately after fill** with GTC duration
+                                    4. **Monitor position** - exit order will automatically execute at profit target
+                                    5. **Set calendar reminder** at 7-10 DTE to review if not yet closed
+                                    
+                                    💡 **Pro Tip:** Use GTC (Good Till Canceled) duration for exit orders so they remain active until filled or you cancel them.
+                                    """)
                                 else:
                                     st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
                         

@@ -585,6 +585,95 @@ class SchwabTrader:
         
         return order
     
+    def create_iron_condor_exit_order(
+        self,
+        symbol: str,
+        expiration: str,
+        long_put_strike: float,
+        short_put_strike: float,
+        short_call_strike: float,
+        long_call_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "GTC"
+    ) -> Dict[str, Any]:
+        """
+        Create an iron condor EXIT order (4-leg closing order).
+        This closes an existing iron condor position by reversing all legs.
+        
+        Entry was: BUY lower put, SELL higher put, SELL lower call, BUY higher call (net credit)
+        Exit is: SELL lower put, BUY higher put, BUY lower call, SELL higher call (net debit)
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            long_put_strike: Strike for the put that was bought (lowest strike)
+            short_put_strike: Strike for the put that was sold
+            short_call_strike: Strike for the call that was sold
+            long_call_strike: Strike for the call that was bought (highest strike)
+            quantity: Number of contracts
+            limit_price: Max net debit willing to pay to close (should be less than entry credit)
+            duration: Order duration (recommend GTC for set-and-forget)
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for all 4 legs
+        long_put_symbol = f"{symbol_padded}{exp_str}P{int(long_put_strike * 1000):08d}"
+        short_put_symbol = f"{symbol_padded}{exp_str}P{int(short_put_strike * 1000):08d}"
+        short_call_symbol = f"{symbol_padded}{exp_str}C{int(short_call_strike * 1000):08d}"
+        long_call_symbol = f"{symbol_padded}{exp_str}C{int(long_call_strike * 1000):08d}"
+        
+        # Build 4-leg EXIT order (reverse all instructions from entry)
+        order = {
+            "orderType": "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": long_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": short_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": short_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": long_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
     def export_order(
         self,
         order: Dict[str, Any],
