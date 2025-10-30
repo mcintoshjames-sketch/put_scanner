@@ -4630,7 +4630,7 @@ with tabs[9]:
             # Use realistic equity drift for CC (7% annual = historical equity returns)
             mc = mc_pnl("CC", params, n_paths=int(paths), mu=0.07, seed=None)
 
-        else:  # COLLAR
+        elif strat_choice == "COLLAR":
             kc = float(_safe_float(row.get("CallStrike")))
             kp = float(_safe_float(row.get("PutStrike")))
             call_prem = float(_safe_float(row.get("CallPrem"))) if row.get(
@@ -4670,6 +4670,72 @@ with tabs[9]:
             # Use realistic equity drift for Collar (7% annual)
             mc = mc_pnl("COLLAR", params, n_paths=int(
                 paths), mu=0.07, seed=None)
+
+        elif strat_choice == "IRON_CONDOR":
+            # Iron Condor structure
+            put_long_strike = float(_safe_float(row.get("PutLongStrike")))
+            put_short_strike = float(_safe_float(row.get("PutShortStrike")))
+            call_short_strike = float(_safe_float(row.get("CallShortStrike")))
+            call_long_strike = float(_safe_float(row.get("CallLongStrike")))
+            net_credit = float(_safe_float(row.get("NetCredit")))
+            
+            # Calculate spread widths and capital requirements
+            put_spread_width = put_short_strike - put_long_strike
+            call_spread_width = call_long_strike - call_short_strike
+            max_spread_width = max(put_spread_width, call_spread_width)
+            capital_per_share = max_spread_width - net_credit
+            capital = capital_per_share * 100.0
+            
+            # Calculate max profit and max loss
+            max_profit = net_credit * 100.0
+            max_loss = capital
+            
+            # Calculate breakevens
+            breakeven_lower = put_short_strike - net_credit
+            breakeven_upper = call_short_strike + net_credit
+            
+            base_rows = [
+                ("Strategy", "IRON_CONDOR"),
+                ("Ticker", row.get("Ticker")),
+                ("Price", f"${price:,.2f}"),
+                ("Put Spread", f"${put_long_strike:.0f} / ${put_short_strike:.0f}"),
+                ("Call Spread", f"${call_short_strike:.0f} / ${call_long_strike:.0f}"),
+                ("Exp", row.get("Exp")),
+                ("Days", f"{days}"),
+                ("Net Credit", f"${net_credit:.2f}"),
+                ("Capital Required", f"${capital:,.0f}"),
+                ("Max Profit", f"${max_profit:.0f}"),
+                ("Max Loss", f"${max_loss:.0f}"),
+                ("Breakeven Lower", f"${breakeven_lower:.2f}"),
+                ("Breakeven Upper", f"${breakeven_upper:.2f}"),
+                ("IV", f"{iv_raw:.2f}%" if iv_raw ==
+                 iv_raw and iv_raw > 0 else "n/a"),
+                ("Score", f"{row.get('Score'):.2f}" if row.get(
+                    'Score') == row.get('Score') else "n/a"),
+            ]
+            st.subheader("Structure summary")
+            st.table(pd.DataFrame(base_rows, columns=["Field", "Value"]))
+
+            paths = 50000
+            days_for_mc = max(1, days)
+            iv_for_calc = iv_dec if (
+                iv_dec == iv_dec and iv_dec > 0.0) else 0.20
+            params = dict(
+                S0=price, 
+                days=days_for_mc, 
+                iv=iv_for_calc,
+                put_long_strike=put_long_strike,
+                put_short_strike=put_short_strike,
+                call_short_strike=call_short_strike,
+                call_long_strike=call_long_strike,
+                net_credit=net_credit
+            )
+            # Use neutral drift for Iron Condor (0% annual = market neutral)
+            mc = mc_pnl("IRON_CONDOR", params, n_paths=int(paths), mu=0.0, seed=None)
+
+        else:
+            st.error(f"Unknown strategy: {strat_choice}")
+            mc = {}
 
         # Risk & reward summary from MC
         pnl = mc.get("pnl_paths")
