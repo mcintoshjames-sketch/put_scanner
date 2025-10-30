@@ -1757,6 +1757,514 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
     return df
 
 
+def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_spread,
+                             min_roi, min_cushion, min_poew, earn_window, risk_free,
+                             spread_width=5.0, target_delta_short=0.20, bill_yield=0.0):
+    """
+    Scan for Bull Put Spread opportunities (bullish/neutral credit spread with defined risk).
+    
+    Structure:
+    - SELL put at higher strike (Ks) - collect premium
+    - BUY put at lower strike (Kl) - limit downside, Kl = Ks - spread_width
+    
+    This creates a NET CREDIT spread with:
+    - Max Profit = Net Credit
+    - Max Loss = Spread Width - Net Credit
+    - Breakeven = Short Strike - Net Credit
+    
+    Returns DataFrame with ranked Bull Put Spread opportunities.
+    """
+    stock = yf.Ticker(ticker)
+    try:
+        S = fetch_price(ticker)
+    except Exception:
+        return pd.DataFrame()
+
+    expirations = fetch_expirations(ticker)
+    earn_date = get_earnings_date(stock)
+    div_ps_annual, div_y = trailing_dividend_info(stock, S)
+    
+    rows = []
+    
+    for exp in expirations:
+        try:
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        D = (ed - datetime.now(timezone.utc).date()).days
+        if D < int(min_days) or D > int(days_limit):
+            continue
+        if earn_date is not None and abs((earn_date - ed).days) <= int(earn_window):
+            continue
+
+        T = D / 365.0
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        
+        if "type" in chain_all.columns:
+            puts = chain_all[chain_all["type"].str.lower() == "put"].copy()
+        else:
+            puts = chain_all.copy()
+        
+        if puts.empty:
+            continue
+        
+        # Find potential short puts (sell) - OTM puts with target delta
+        puts_sell = []
+        for _, r in puts.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "k", "K"], float("nan"))
+            if not (K == K and K > 0 and K < S):  # Must be OTM (below stock price)
+                continue
+            
+            iv = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], 0.20)
+            if iv == iv and iv > 3.0:
+                iv = iv / 100.0
+            
+            # Calculate put delta (negative for puts)
+            pd_val = put_delta(S, K, risk_free, iv, T, div_y)
+            
+            bid = _get_num_from_row(r, ["bid", "Bid", "b"])
+            ask = _get_num_from_row(r, ["ask", "Ask", "a"])
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
+            prem = effective_credit(bid, ask, last)
+            
+            if prem != prem or prem <= 0:
+                continue
+            
+            oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            spread_pct = compute_spread_pct(bid, ask, prem)
+            
+            puts_sell.append({
+                "K": K, "prem": prem, "delta": pd_val, "iv": iv,
+                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+            })
+        
+        if not puts_sell:
+            continue
+        
+        # For each potential short put, find corresponding long put
+        for ps in puts_sell:
+            Ks = float(ps["K"])  # Short strike (higher)
+            Kl = Ks - spread_width  # Long strike (lower)
+            
+            # Check OI and spread on short leg
+            if ps["oi"] < min_oi:
+                continue
+            if ps["spread%"] is not None and ps["spread%"] > max_spread:
+                continue
+            
+            # Find matching long put at Kl
+            put_long = puts[puts.apply(
+                lambda r: abs(_get_num_from_row(r, ["strike", "Strike", "k", "K"], 0) - Kl) < 0.5, 
+                axis=1
+            )]
+            
+            if put_long.empty:
+                continue
+            
+            # Get long put premium (what we pay)
+            pl_row = put_long.iloc[0]
+            pl_bid = _get_num_from_row(pl_row, ["bid", "Bid", "b"])
+            pl_ask = _get_num_from_row(pl_row, ["ask", "Ask", "a"])
+            pl_last = _get_num_from_row(pl_row, ["lastPrice", "last", "mark", "mid"])
+            pl_prem = effective_debit(pl_bid, pl_ask, pl_last)
+            pl_oi = _safe_int(_get_num_from_row(pl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+            
+            if pl_prem != pl_prem or pl_prem <= 0:
+                continue
+            
+            # Check long leg OI
+            if pl_oi < min_oi:
+                continue
+            
+            # Calculate net credit (what we collect)
+            net_credit = ps["prem"] - pl_prem
+            
+            if net_credit <= 0:
+                continue
+            
+            # Calculate risk metrics
+            max_loss = spread_width - net_credit
+            capital_at_risk = max_loss * 100.0  # Per contract
+            
+            # ROI calculations
+            roi_cycle = net_credit / max_loss if max_loss > 0 else 0.0
+            roi_ann = roi_cycle * (365.0 / D)
+            
+            if roi_ann < float(min_roi):
+                continue
+            
+            # OTM% based on short strike
+            otm_pct = (S - Ks) / S * 100.0
+            
+            # Probability of expiring worthless (POEW) for short put
+            poew = 1.0 - abs(ps["delta"]) if ps["delta"] == ps["delta"] else float("nan")
+            
+            if poew == poew and poew < float(min_poew):
+                continue
+            
+            # Cushion calculation (standard deviations to short strike)
+            exp_mv = expected_move(S, ps["iv"], T)
+            cushion_sigma = (S - Ks) / exp_mv if exp_mv > 0 else float("nan")
+            
+            if cushion_sigma == cushion_sigma and cushion_sigma < float(min_cushion):
+                continue
+            
+            # Calculate combined Greeks (net position)
+            # Short put theta (positive for us)
+            ps_theta = put_theta(S, Ks, risk_free, ps["iv"], T, div_y)
+            pl_iv = _get_num_from_row(pl_row, ["impliedVolatility", "iv", "IV"], 0.20)
+            if pl_iv == pl_iv and pl_iv > 3.0:
+                pl_iv = pl_iv / 100.0
+            pl_theta = put_theta(S, Kl, risk_free, pl_iv, T, div_y)
+            
+            # Net theta (short - long, since we're selling short and buying long)
+            net_theta = ps_theta - pl_theta  # Should be negative (we lose time value)
+            theta_per_day = abs(net_theta) * 100.0  # Per contract, absolute value
+            
+            # Gamma (risk measure)
+            ps_gamma = option_gamma(S, Ks, risk_free, ps["iv"], T, div_y)
+            pl_gamma = option_gamma(S, Kl, risk_free, pl_iv, T, div_y)
+            net_gamma = ps_gamma - pl_gamma  # Short gamma - long gamma
+            gamma_per_contract = abs(net_gamma) * 100.0
+            
+            # Theta/Gamma ratio
+            theta_gamma_ratio = float("nan")
+            if gamma_per_contract > 0 and theta_per_day == theta_per_day:
+                theta_gamma_ratio = theta_per_day / gamma_per_contract
+            
+            # Delta (directional exposure)
+            pl_delta = put_delta(S, Kl, risk_free, pl_iv, T, div_y)
+            net_delta = ps["delta"] - pl_delta  # Negative (bearish)
+            
+            # Vega (IV sensitivity)
+            ps_vega = option_vega(S, Ks, risk_free, ps["iv"], T, div_y)
+            pl_vega = option_vega(S, Kl, risk_free, pl_iv, T, div_y)
+            net_vega = ps_vega - pl_vega  # Negative (we want IV to decrease)
+            
+            # Scoring (same weights as CSP for consistency)
+            liq_score = max(0.0, 1.0 - min((ps["spread%"] or 20.0), 20.0) / 20.0)
+            
+            # Theta/Gamma scoring (same as CSP)
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio < 0.5:
+                    tg_score = 0.0
+                elif theta_gamma_ratio < 0.8:
+                    tg_score = theta_gamma_ratio / 0.8
+                elif theta_gamma_ratio <= 3.0:
+                    tg_score = 1.0
+                elif theta_gamma_ratio <= 5.0:
+                    tg_score = 1.0 - (theta_gamma_ratio - 3.0) * 0.25
+                elif theta_gamma_ratio <= 10.0:
+                    tg_score = 0.5 - (theta_gamma_ratio - 5.0) * 0.06
+                else:
+                    tg_score = 0.1
+            else:
+                tg_score = 0.0
+            
+            score = (0.35 * roi_ann +
+                     0.15 * (min(cushion_sigma, 3.0) / 3.0 if cushion_sigma == cushion_sigma else 0.0) +
+                     0.30 * tg_score +
+                     0.20 * liq_score)
+            
+            # Days to earnings
+            days_to_earnings = None
+            if earn_date is not None:
+                days_to_earnings = (earn_date - datetime.now(timezone.utc).date()).days
+            
+            rows.append({
+                "Strategy": "BullPutSpread",
+                "Ticker": ticker,
+                "Price": round(S, 2),
+                "Exp": exp,
+                "Days": D,
+                "SellStrike": float(Ks),  # Short strike (higher)
+                "BuyStrike": float(Kl),   # Long strike (lower)
+                "Spread": float(spread_width),
+                "NetCredit": round(net_credit, 2),
+                "MaxLoss": round(max_loss, 2),
+                "OTM%": round(otm_pct, 2),
+                "ROI%": round(roi_cycle * 100.0, 2),
+                "ROI%_ann": round(roi_ann * 100.0, 2),
+                "Δ": round(net_delta, 3),
+                "Γ": round(net_gamma, 4),
+                "Θ": round(net_theta, 3),
+                "Vρ": round(net_vega, 3),
+                "IV": round(ps["iv"] * 100.0, 2),
+                "POEW": round(poew, 3) if poew == poew else float("nan"),
+                "CushionSigma": round(cushion_sigma, 2) if cushion_sigma == cushion_sigma else float("nan"),
+                "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
+                "Spread%": round(ps["spread%"], 2) if ps["spread%"] is not None else float("nan"),
+                "OI": ps["oi"],
+                "Capital": int(capital_at_risk),
+                "DaysToEarnings": days_to_earnings,
+                "Score": round(score, 6),
+                # Option symbols for order generation
+                "SellLeg": None,  # Will be populated by UI if needed
+                "BuyLeg": None
+            })
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]).reset_index(drop=True)
+    return df
+
+
+def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spread,
+                              min_roi, min_cushion, min_poew, earn_window, risk_free,
+                              spread_width=5.0, target_delta_short=0.20, bill_yield=0.0):
+    """
+    Scan for Bear Call Spread opportunities (bearish/neutral credit spread with defined risk).
+    
+    Structure:
+    - SELL call at lower strike (Ks) - collect premium
+    - BUY call at higher strike (Kl) - limit upside, Kl = Ks + spread_width
+    
+    This creates a NET CREDIT spread with:
+    - Max Profit = Net Credit
+    - Max Loss = Spread Width - Net Credit
+    - Breakeven = Short Strike + Net Credit
+    
+    Returns DataFrame with ranked Bear Call Spread opportunities.
+    """
+    stock = yf.Ticker(ticker)
+    try:
+        S = fetch_price(ticker)
+    except Exception:
+        return pd.DataFrame()
+
+    expirations = fetch_expirations(ticker)
+    earn_date = get_earnings_date(stock)
+    div_ps_annual, div_y = trailing_dividend_info(stock, S)
+    
+    rows = []
+    
+    for exp in expirations:
+        try:
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        D = (ed - datetime.now(timezone.utc).date()).days
+        if D < int(min_days) or D > int(days_limit):
+            continue
+        if earn_date is not None and abs((earn_date - ed).days) <= int(earn_window):
+            continue
+
+        T = D / 365.0
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        
+        if "type" in chain_all.columns:
+            calls = chain_all[chain_all["type"].str.lower() == "call"].copy()
+        else:
+            calls = chain_all.copy()
+        
+        if calls.empty:
+            continue
+        
+        # Find potential short calls (sell) - OTM calls with target delta
+        calls_sell = []
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "k", "K"], float("nan"))
+            if not (K == K and K > 0 and K > S):  # Must be OTM (above stock price)
+                continue
+            
+            iv = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], 0.20)
+            if iv == iv and iv > 3.0:
+                iv = iv / 100.0
+            
+            # Calculate call delta (positive for calls)
+            cd_val = call_delta(S, K, risk_free, iv, T, div_y)
+            
+            bid = _get_num_from_row(r, ["bid", "Bid", "b"])
+            ask = _get_num_from_row(r, ["ask", "Ask", "a"])
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
+            prem = effective_credit(bid, ask, last)
+            
+            if prem != prem or prem <= 0:
+                continue
+            
+            oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            spread_pct = compute_spread_pct(bid, ask, prem)
+            
+            calls_sell.append({
+                "K": K, "prem": prem, "delta": cd_val, "iv": iv,
+                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+            })
+        
+        if not calls_sell:
+            continue
+        
+        # For each potential short call, find corresponding long call
+        for cs in calls_sell:
+            Ks = float(cs["K"])  # Short strike (lower)
+            Kl = Ks + spread_width  # Long strike (higher)
+            
+            # Check OI and spread on short leg
+            if cs["oi"] < min_oi:
+                continue
+            if cs["spread%"] is not None and cs["spread%"] > max_spread:
+                continue
+            
+            # Find matching long call at Kl
+            call_long = calls[calls.apply(
+                lambda r: abs(_get_num_from_row(r, ["strike", "Strike", "k", "K"], 0) - Kl) < 0.5, 
+                axis=1
+            )]
+            
+            if call_long.empty:
+                continue
+            
+            # Get long call premium (what we pay)
+            cl_row = call_long.iloc[0]
+            cl_bid = _get_num_from_row(cl_row, ["bid", "Bid", "b"])
+            cl_ask = _get_num_from_row(cl_row, ["ask", "Ask", "a"])
+            cl_last = _get_num_from_row(cl_row, ["lastPrice", "last", "mark", "mid"])
+            cl_prem = effective_debit(cl_bid, cl_ask, cl_last)
+            cl_oi = _safe_int(_get_num_from_row(cl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+            
+            if cl_prem != cl_prem or cl_prem <= 0:
+                continue
+            
+            # Check long leg OI
+            if cl_oi < min_oi:
+                continue
+            
+            # Calculate net credit (what we collect)
+            net_credit = cs["prem"] - cl_prem
+            
+            if net_credit <= 0:
+                continue
+            
+            # Calculate risk metrics
+            max_loss = spread_width - net_credit
+            capital_at_risk = max_loss * 100.0  # Per contract
+            
+            # ROI calculations
+            roi_cycle = net_credit / max_loss if max_loss > 0 else 0.0
+            roi_ann = roi_cycle * (365.0 / D)
+            
+            if roi_ann < float(min_roi):
+                continue
+            
+            # OTM% based on short strike
+            otm_pct = (Ks - S) / S * 100.0
+            
+            # Probability of expiring worthless (POEW) for short call
+            poew = 1.0 - abs(cs["delta"]) if cs["delta"] == cs["delta"] else float("nan")
+            
+            if poew == poew and poew < float(min_poew):
+                continue
+            
+            # Cushion calculation (standard deviations to short strike)
+            exp_mv = expected_move(S, cs["iv"], T)
+            cushion_sigma = (Ks - S) / exp_mv if exp_mv > 0 else float("nan")
+            
+            if cushion_sigma == cushion_sigma and cushion_sigma < float(min_cushion):
+                continue
+            
+            # Calculate combined Greeks (net position)
+            # Short call theta (positive for us)
+            cs_theta = call_theta(S, Ks, risk_free, cs["iv"], T, div_y)
+            cl_iv = _get_num_from_row(cl_row, ["impliedVolatility", "iv", "IV"], 0.20)
+            if cl_iv == cl_iv and cl_iv > 3.0:
+                cl_iv = cl_iv / 100.0
+            cl_theta = call_theta(S, Kl, risk_free, cl_iv, T, div_y)
+            
+            # Net theta (short - long, since we're selling short and buying long)
+            net_theta = cs_theta - cl_theta  # Should be negative (we lose time value)
+            theta_per_day = abs(net_theta) * 100.0  # Per contract, absolute value
+            
+            # Gamma (risk measure)
+            cs_gamma = option_gamma(S, Ks, risk_free, cs["iv"], T, div_y)
+            cl_gamma = option_gamma(S, Kl, risk_free, cl_iv, T, div_y)
+            net_gamma = cs_gamma - cl_gamma  # Short gamma - long gamma
+            gamma_per_contract = abs(net_gamma) * 100.0
+            
+            # Theta/Gamma ratio
+            theta_gamma_ratio = float("nan")
+            if gamma_per_contract > 0 and theta_per_day == theta_per_day:
+                theta_gamma_ratio = theta_per_day / gamma_per_contract
+            
+            # Delta (directional exposure)
+            cl_delta = call_delta(S, Kl, risk_free, cl_iv, T, div_y)
+            net_delta = cs["delta"] - cl_delta  # Positive (bullish)
+            
+            # Vega (IV sensitivity)
+            cs_vega = option_vega(S, Ks, risk_free, cs["iv"], T, div_y)
+            cl_vega = option_vega(S, Kl, risk_free, cl_iv, T, div_y)
+            net_vega = cs_vega - cl_vega  # Negative (we want IV to decrease)
+            
+            # Scoring (same weights as CSP for consistency)
+            liq_score = max(0.0, 1.0 - min((cs["spread%"] or 20.0), 20.0) / 20.0)
+            
+            # Theta/Gamma scoring (same as CSP)
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio < 0.5:
+                    tg_score = 0.0
+                elif theta_gamma_ratio < 0.8:
+                    tg_score = theta_gamma_ratio / 0.8
+                elif theta_gamma_ratio <= 3.0:
+                    tg_score = 1.0
+                elif theta_gamma_ratio <= 5.0:
+                    tg_score = 1.0 - (theta_gamma_ratio - 3.0) * 0.25
+                elif theta_gamma_ratio <= 10.0:
+                    tg_score = 0.5 - (theta_gamma_ratio - 5.0) * 0.06
+                else:
+                    tg_score = 0.1
+            else:
+                tg_score = 0.0
+            
+            score = (0.35 * roi_ann +
+                     0.15 * (min(cushion_sigma, 3.0) / 3.0 if cushion_sigma == cushion_sigma else 0.0) +
+                     0.30 * tg_score +
+                     0.20 * liq_score)
+            
+            # Days to earnings
+            days_to_earnings = None
+            if earn_date is not None:
+                days_to_earnings = (earn_date - datetime.now(timezone.utc).date()).days
+            
+            rows.append({
+                "Strategy": "BearCallSpread",
+                "Ticker": ticker,
+                "Price": round(S, 2),
+                "Exp": exp,
+                "Days": D,
+                "SellStrike": float(Ks),  # Short strike (lower)
+                "BuyStrike": float(Kl),   # Long strike (higher)
+                "Spread": float(spread_width),
+                "NetCredit": round(net_credit, 2),
+                "MaxLoss": round(max_loss, 2),
+                "OTM%": round(otm_pct, 2),
+                "ROI%": round(roi_cycle * 100.0, 2),
+                "ROI%_ann": round(roi_ann * 100.0, 2),
+                "Δ": round(net_delta, 3),
+                "Γ": round(net_gamma, 4),
+                "Θ": round(net_theta, 3),
+                "Vρ": round(net_vega, 3),
+                "IV": round(cs["iv"] * 100.0, 2),
+                "POEW": round(poew, 3) if poew == poew else float("nan"),
+                "CushionSigma": round(cushion_sigma, 2) if cushion_sigma == cushion_sigma else float("nan"),
+                "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
+                "Spread%": round(cs["spread%"], 2) if cs["spread%"] is not None else float("nan"),
+                "OI": cs["oi"],
+                "Capital": int(capital_at_risk),
+                "DaysToEarnings": days_to_earnings,
+                "Score": round(score, 6),
+                # Option symbols for order generation
+                "SellLeg": None,  # Will be populated by UI if needed
+                "BuyLeg": None
+            })
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]).reset_index(drop=True)
+    return df
+
+
 # -------------------------- Best Practices -----------------------
 
 def best_practices(strategy):
@@ -1795,6 +2303,33 @@ def best_practices(strategy):
             "Balance: Target **symmetric wings** (equal cushion on both sides) for neutral outlook.",
             "Exit: Take profit at **50–75% of max credit**; close early if one side Δ > ~0.35 or breached.",
             "Avoid earnings and high-IV events that can cause gap risk through breakevens.",
+        ]
+    if strategy == "BULL_PUT_SPREAD":
+        return [
+            "Structure: **SELL higher strike put** (collect premium), **BUY lower strike put** (define max loss).",
+            "Tenor: **21–45 DTE** for optimal theta decay; same sweet spot as CSP.",
+            "Strike selection: Short strike **Δ ~ -0.15 to -0.25** (75–85% POEW); spread width **$5–10** or **5–10% of stock price**.",
+            "Liquidity: **Both legs need OI ≥ 200** and **bid-ask ≤ 10%**; avoid illiquid strikes.",
+            "Risk: Max loss = **spread width − net credit** (fully defined); max profit = **net credit**.",
+            "Capital efficiency: **5-10x more efficient than CSP** (only risk spread width, not full strike).",
+            "Target: Collect **25–40% of spread width** as credit (higher is better but riskier).",
+            "Breakeven: **Short strike − net credit**; below this, you lose money.",
+            "Exit: Take profit at **50–75% of max credit**; close early if short strike Δ > ~0.35.",
+            "Avoid earnings and high-IV events that can cause gap moves through strikes.",
+        ]
+    if strategy == "BEAR_CALL_SPREAD":
+        return [
+            "Structure: **SELL lower strike call** (collect premium), **BUY higher strike call** (define max loss).",
+            "Tenor: **21–45 DTE** for optimal theta decay; same sweet spot as CC.",
+            "Strike selection: Short strike **Δ ~ +0.15 to +0.25** (75–85% POEW); spread width **$5–10** or **5–10% of stock price**.",
+            "Liquidity: **Both legs need OI ≥ 200** and **bid-ask ≤ 10%**; avoid illiquid strikes.",
+            "Risk: Max loss = **spread width − net credit** (fully defined); max profit = **net credit**.",
+            "Capital efficiency: Better than naked calls (defined risk) but requires margin for spread.",
+            "Target: Collect **25–40% of spread width** as credit (higher is better but riskier).",
+            "Breakeven: **Short strike + net credit**; above this, you lose money.",
+            "Dividend risk: Calls may be assigned early if deep ITM before ex-div; monitor closely.",
+            "Exit: Take profit at **50–75% of max credit**; close early if short strike Δ > ~0.35.",
+            "Avoid earnings and high-IV events that can cause gap moves through strikes.",
         ]
     return []
 
@@ -2733,7 +3268,7 @@ if "USE_POLYGON" in globals() and USE_POLYGON and "POLY" in globals() and POLY i
 st.title("📊 Options Income Strategy Lab — CSP vs Covered Call vs Collar")
 
 # Initialize session state
-for key in ["df_csp", "df_cc", "df_collar", "df_iron_condor"]:
+for key in ["df_csp", "df_cc", "df_collar", "df_iron_condor", "df_bull_put_spread", "df_bear_call_spread"]:
     if key not in st.session_state:
         st.session_state[key] = pd.DataFrame()
 
@@ -3035,6 +3570,17 @@ with st.sidebar:
         "Min Cushion (σ, Iron Condor)", value=0.5, step=0.1, key="ic_min_cushion_input",
         help="Minimum cushion in standard deviations for both wings")
 
+    st.subheader("Credit Spreads (Bull Put / Bear Call)")
+    cs_spread_width = st.number_input(
+        "Spread Width ($)", value=5.0, step=1.0, key="cs_spread_width",
+        help="Distance between short and long strikes for credit spreads")
+    cs_target_delta = st.slider(
+        "Short Strike Target Δ (abs)", 0.10, 0.30, 0.20, step=0.01, key="cs_target_delta",
+        help="Target delta for short strikes (~0.20 = 80% POEW)")
+    cs_min_roi = st.number_input(
+        "Min ROI % (annualized)", value=20.0, step=1.0, key="cs_min_roi_input",
+        help="Minimum annualized return on risk capital")
+
     st.divider()
     run_btn = st.button("🔎 Scan Strategies")
 
@@ -3042,17 +3588,19 @@ with st.sidebar:
 @st.cache_data(show_spinner=True, ttl=120)
 def run_scans(tickers, params):
     """
-    Run CSP, CC, Collar, and Iron Condor scans in parallel across tickers.
+    Run CSP, CC, Collar, Iron Condor, Bull Put Spread, and Bear Call Spread scans in parallel across tickers.
     Uses ThreadPoolExecutor for concurrent processing.
     """
     # Handle empty ticker list
     if not tickers or len(tickers) == 0:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
 
     csp_all = []
     cc_all = []
     col_all = []
     ic_all = []
+    bps_all = []  # Bull Put Spread
+    bcs_all = []  # Bear Call Spread
     scan_counters = {"CSP": {}}
 
     def scan_ticker(t):
@@ -3122,7 +3670,41 @@ def run_scans(tickers, params):
             bill_yield=params["bill_yield"]
         )
 
-        return csp, csp_cnt, cc, col, ic
+        # Bull Put Spread scan
+        bps = analyze_bull_put_spread(
+            t,
+            min_days=params["min_days"],
+            days_limit=params["days_limit"],
+            min_oi=params["min_oi"],
+            max_spread=params["max_spread"],
+            min_roi=params["cs_min_roi"] / 100.0,
+            min_cushion=params["min_cushion"],
+            min_poew=params["min_poew"],
+            earn_window=params["earn_window"],
+            risk_free=params["risk_free"],
+            spread_width=params["cs_spread_width"],
+            target_delta_short=params["cs_target_delta"],
+            bill_yield=params["bill_yield"]
+        )
+
+        # Bear Call Spread scan
+        bcs = analyze_bear_call_spread(
+            t,
+            min_days=params["min_days"],
+            days_limit=params["days_limit"],
+            min_oi=params["min_oi"],
+            max_spread=params["max_spread"],
+            min_roi=params["cs_min_roi"] / 100.0,
+            min_cushion=params["min_cushion"],
+            min_poew=params["min_poew"],
+            earn_window=params["earn_window"],
+            risk_free=params["risk_free"],
+            spread_width=params["cs_spread_width"],
+            target_delta_short=params["cs_target_delta"],
+            bill_yield=params["bill_yield"]
+        )
+
+        return csp, csp_cnt, cc, col, ic, bps, bcs
 
     # Parallel execution with ThreadPoolExecutor
     max_workers = min(len(tickers), 8)  # Cap at 8 concurrent workers
@@ -3136,7 +3718,7 @@ def run_scans(tickers, params):
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
-                csp, csp_cnt, cc, col, ic = future.result()
+                csp, csp_cnt, cc, col, ic, bps, bcs = future.result()
 
                 # Accumulate results
                 if not csp.empty:
@@ -3147,6 +3729,10 @@ def run_scans(tickers, params):
                     col_all.append(col)
                 if not ic.empty:
                     ic_all.append(ic)
+                if not bps.empty:
+                    bps_all.append(bps)
+                if not bcs.empty:
+                    bcs_all.append(bcs)
 
                 # Aggregate counters
                 for k, v in csp_cnt.items():
@@ -3167,8 +3753,12 @@ def run_scans(tickers, params):
         col_all, ignore_index=True) if col_all else pd.DataFrame()
     df_ic = pd.concat(
         ic_all, ignore_index=True) if ic_all else pd.DataFrame()
+    df_bps = pd.concat(
+        bps_all, ignore_index=True) if bps_all else pd.DataFrame()
+    df_bcs = pd.concat(
+        bcs_all, ignore_index=True) if bcs_all else pd.DataFrame()
 
-    return df_csp, df_cc, df_col, df_ic, scan_counters
+    return df_csp, df_cc, df_col, df_ic, df_bps, df_bcs, scan_counters
 
 
 # Run scans
@@ -3192,6 +3782,9 @@ if run_btn:
             ic_spread_width_call=float(ic_spread_width_call),
             ic_min_roi=float(ic_min_roi),
             ic_min_cushion=float(ic_min_cushion),
+            cs_spread_width=float(cs_spread_width),
+            cs_target_delta=float(cs_target_delta),
+            cs_min_roi=float(cs_min_roi),
             min_oi=int(min_oi), max_spread=float(max_spread),
             earn_window=int(earn_window), risk_free=float(risk_free),
             per_contract_cap=per_contract_cap,
@@ -3199,19 +3792,21 @@ if run_btn:
         )
         try:
             with st.spinner("Scanning..."):
-                df_csp, df_cc, df_collar, df_iron_condor, scan_counters = run_scans(
+                df_csp, df_cc, df_collar, df_iron_condor, df_bull_put_spread, df_bear_call_spread, scan_counters = run_scans(
                     tickers, opts)
             st.session_state["df_csp"] = df_csp
             st.session_state["df_cc"] = df_cc
             st.session_state["df_collar"] = df_collar
             st.session_state["df_iron_condor"] = df_iron_condor
+            st.session_state["df_bull_put_spread"] = df_bull_put_spread
+            st.session_state["df_bear_call_spread"] = df_bear_call_spread
             st.session_state["scan_counters"] = scan_counters
 
             # Show results summary
-            total_results = len(df_csp) + len(df_cc) + len(df_collar) + len(df_iron_condor)
+            total_results = len(df_csp) + len(df_cc) + len(df_collar) + len(df_iron_condor) + len(df_bull_put_spread) + len(df_bear_call_spread)
             if total_results > 0:
                 st.success(
-                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar, {len(df_iron_condor)} Iron Condor opportunities")
+                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar, {len(df_iron_condor)} IC, {len(df_bull_put_spread)} Bull Put, {len(df_bear_call_spread)} Bear Call")
             else:
                 st.warning(
                     "No opportunities found with current filters. Try loosening your criteria.")
@@ -3269,12 +3864,15 @@ df_csp = st.session_state["df_csp"]
 df_cc = st.session_state["df_cc"]
 df_collar = st.session_state["df_collar"]
 df_iron_condor = st.session_state["df_iron_condor"]
+df_bull_put_spread = st.session_state["df_bull_put_spread"]
+df_bear_call_spread = st.session_state["df_bear_call_spread"]
 
 # --- Universal Contract / Structure Picker (applies to all tabs) ---
 st.subheader("Selection — applies to Risk, Runbook, and Stress tabs")
 
 # Determine available strategies based on scan results
-_available = [("CSP", df_csp), ("CC", df_cc), ("COLLAR", df_collar), ("IRON_CONDOR", df_iron_condor)]
+_available = [("CSP", df_csp), ("CC", df_cc), ("COLLAR", df_collar), ("IRON_CONDOR", df_iron_condor),
+              ("BULL_PUT_SPREAD", df_bull_put_spread), ("BEAR_CALL_SPREAD", df_bear_call_spread)]
 available_strats = [name for name, df in _available if not df.empty]
 if "sel_strategy" not in st.session_state:
     st.session_state["sel_strategy"] = (
@@ -3283,8 +3881,8 @@ if "sel_strategy" not in st.session_state:
 # Strategy picker (single source of truth)
 sel_strategy = st.selectbox(
     "Strategy",
-    ["CSP", "CC", "COLLAR", "IRON_CONDOR"],
-    index=["CSP", "CC", "COLLAR", "IRON_CONDOR"].index(st.session_state["sel_strategy"]),
+    ["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"],
+    index=["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"].index(st.session_state["sel_strategy"]),
     key="sel_strategy",
 )
 
@@ -3313,15 +3911,35 @@ def _keys_for(strategy: str) -> pd.Series:
             + " | Kc=" + df["CallStrike"].astype(str)
             + " | Kp=" + df["PutStrike"].astype(str)
         )
-    # IRON_CONDOR
-    df = df_iron_condor
-    if df.empty:
-        return pd.Series([], dtype=str)
-    return (
-        df["Ticker"] + " | " + df["Exp"]
-        + " | CS=" + df["CallShortStrike"].astype(str)
-        + " | PS=" + df["PutShortStrike"].astype(str)
-    )
+    if strategy == "IRON_CONDOR":
+        df = df_iron_condor
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"]
+            + " | CS=" + df["CallShortStrike"].astype(str)
+            + " | PS=" + df["PutShortStrike"].astype(str)
+        )
+    if strategy == "BULL_PUT_SPREAD":
+        df = df_bull_put_spread
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"]
+            + " | Sell=" + df["SellStrike"].astype(str)
+            + " | Buy=" + df["BuyStrike"].astype(str)
+        )
+    if strategy == "BEAR_CALL_SPREAD":
+        df = df_bear_call_spread
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"]
+            + " | Sell=" + df["SellStrike"].astype(str)
+            + " | Buy=" + df["BuyStrike"].astype(str)
+        )
+    # Default fallback
+    return pd.Series([], dtype=str)
 
 
 # Contract/structure picker (single source of truth)
@@ -3365,13 +3983,29 @@ def _get_selected_row():
         ks = (df["Ticker"] + " | " + df["Exp"]
               + " | Kc=" + df["CallStrike"].astype(str)
               + " | Kp=" + df["PutStrike"].astype(str))
-    else:  # IRON_CONDOR
+    elif strat == "IRON_CONDOR":
         df = df_iron_condor
         if df.empty:
             return strat, None
         ks = (df["Ticker"] + " | " + df["Exp"]
               + " | CS=" + df["CallShortStrike"].astype(str)
               + " | PS=" + df["PutShortStrike"].astype(str))
+    elif strat == "BULL_PUT_SPREAD":
+        df = df_bull_put_spread
+        if df.empty:
+            return strat, None
+        ks = (df["Ticker"] + " | " + df["Exp"]
+              + " | Sell=" + df["SellStrike"].astype(str)
+              + " | Buy=" + df["BuyStrike"].astype(str))
+    elif strat == "BEAR_CALL_SPREAD":
+        df = df_bear_call_spread
+        if df.empty:
+            return strat, None
+        ks = (df["Ticker"] + " | " + df["Exp"]
+              + " | Sell=" + df["SellStrike"].astype(str)
+              + " | Buy=" + df["BuyStrike"].astype(str))
+    else:
+        return strat, None
     if df.empty:
         return strat, None
     sel = df[ks == key]
@@ -3440,6 +4074,7 @@ def _get_selected_row():
 
 tabs = st.tabs([
     "Cash‑Secured Puts", "Covered Calls", "Collars", "Iron Condor",
+    "Bull Put Spread", "Bear Call Spread",
     "Compare", "Risk (Monte Carlo)", "Playbook",
     "Plan & Runbook", "Stress Test", "Overview", "Roll Analysis"
 ])
@@ -3536,10 +4171,60 @@ with tabs[3]:
             "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
         )
 
-# --- Tab 4: Compare ---
+# --- Tab 4: Bull Put Spread ---
 with tabs[4]:
+    st.header("Bull Put Spread (Defined Risk Credit Spread)")
+    if df_bull_put_spread.empty:
+        st.info("Run a scan or loosen Credit Spread settings.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
+                     "SellStrike", "BuyStrike", "Spread", "NetCredit", "MaxLoss",
+                     "OTM%", "ROI%", "ROI%_ann",
+                     "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
+                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
+                     "DaysToEarnings", "Score"]
+        show_cols = [c for c in show_cols if c in df_bull_put_spread.columns]
+        st.dataframe(df_bull_put_spread[show_cols],
+                     use_container_width=True, height=520)
+        
+        st.caption(
+            "**Bull Put Spread**: SELL higher strike put + BUY lower strike put = NET CREDIT | "
+            "**Max Profit**: Net credit received | "
+            "**Max Loss**: Spread width − net credit | "
+            "**Breakeven**: Sell strike − net credit | "
+            "**Capital**: Max loss × 100 (risk capital per contract) | "
+            "**5-10x more efficient than CSP** (only risk spread width, not full strike)"
+        )
+
+# --- Tab 5: Bear Call Spread ---
+with tabs[5]:
+    st.header("Bear Call Spread (Defined Risk Credit Spread)")
+    if df_bear_call_spread.empty:
+        st.info("Run a scan or loosen Credit Spread settings.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
+                     "SellStrike", "BuyStrike", "Spread", "NetCredit", "MaxLoss",
+                     "OTM%", "ROI%", "ROI%_ann",
+                     "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
+                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
+                     "DaysToEarnings", "Score"]
+        show_cols = [c for c in show_cols if c in df_bear_call_spread.columns]
+        st.dataframe(df_bear_call_spread[show_cols],
+                     use_container_width=True, height=520)
+        
+        st.caption(
+            "**Bear Call Spread**: SELL lower strike call + BUY higher strike call = NET CREDIT | "
+            "**Max Profit**: Net credit received | "
+            "**Max Loss**: Spread width − net credit | "
+            "**Breakeven**: Sell strike + net credit | "
+            "**Capital**: Max loss × 100 (risk capital per contract) | "
+            "**Defined risk, no stock ownership required**"
+        )
+
+# --- Tab 6: Compare ---
+with tabs[6]:
     st.header("Compare Projected Annualized ROIs (mid-price based)")
-    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty:
+    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty and df_bull_put_spread.empty and df_bear_call_spread.empty:
         st.info("No results yet. Run a scan.")
     else:
         pieces = []
@@ -3572,6 +4257,23 @@ with tabs[4]:
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
             pieces.append(tmp)
+        if not df_bull_put_spread.empty:
+            tmp = df_bull_put_spread[["Strategy", "Ticker", "Exp", "Days",
+                                       "SellStrike", "BuyStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = tmp.rename(columns={"SellStrike": "Strike"})
+            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
+            pieces.append(tmp)
+        if not df_bear_call_spread.empty:
+            tmp = df_bear_call_spread[["Strategy", "Ticker", "Exp", "Days",
+                                        "SellStrike", "BuyStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = tmp.rename(columns={"SellStrike": "Strike"})
+            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
+                " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
+            pieces.append(tmp)
+
 
         cmp_df = pd.concat(
             pieces, ignore_index=True) if pieces else pd.DataFrame()
