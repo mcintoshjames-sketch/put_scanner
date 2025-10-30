@@ -674,6 +674,277 @@ class SchwabTrader:
         
         return order
     
+    def create_bull_put_spread_order(
+        self,
+        symbol: str,
+        expiration: str,
+        sell_strike: float,
+        buy_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a bull put spread order (2-leg vertical credit spread).
+        This is a bullish strategy: SELL higher strike put + BUY lower strike put = NET CREDIT.
+        
+        Max profit = net credit received
+        Max loss = (sell_strike - buy_strike) - net_credit
+        Breakeven = sell_strike - net_credit
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            sell_strike: Strike for short (sell) put (higher strike)
+            buy_strike: Strike for long (buy) put (lower strike, protection)
+            quantity: Number of contracts
+            limit_price: Net credit limit (should be positive)
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for both legs
+        # Format: SYMBOL  YYMMDDPTXXXXXXXX (6 char symbol, date, P/C, 8-digit strike in cents)
+        sell_put_symbol = f"{symbol_padded}{exp_str}P{int(sell_strike * 1000):08d}"
+        buy_put_symbol = f"{symbol_padded}{exp_str}P{int(buy_strike * 1000):08d}"
+        
+        # Build 2-leg order (vertical spread)
+        order = {
+            "orderType": "NET_CREDIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": sell_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": buy_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
+    def create_bull_put_spread_exit_order(
+        self,
+        symbol: str,
+        expiration: str,
+        sell_strike: float,
+        buy_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "GTC"
+    ) -> Dict[str, Any]:
+        """
+        Create a bull put spread EXIT order (2-leg closing order).
+        This closes an existing bull put spread by reversing both legs.
+        
+        Entry was: SELL higher put, BUY lower put (net credit)
+        Exit is: BUY higher put, SELL lower put (net debit)
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            sell_strike: Strike for the put that was sold
+            buy_strike: Strike for the put that was bought
+            quantity: Number of contracts
+            limit_price: Max net debit willing to pay to close (should be less than entry credit for profit)
+            duration: Order duration (recommend GTC for set-and-forget)
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for both legs
+        sell_put_symbol = f"{symbol_padded}{exp_str}P{int(sell_strike * 1000):08d}"
+        buy_put_symbol = f"{symbol_padded}{exp_str}P{int(buy_strike * 1000):08d}"
+        
+        # Build 2-leg EXIT order (reverse both instructions from entry)
+        order = {
+            "orderType": "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": sell_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": buy_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
+    def create_bear_call_spread_order(
+        self,
+        symbol: str,
+        expiration: str,
+        sell_strike: float,
+        buy_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a bear call spread order (2-leg vertical credit spread).
+        This is a bearish strategy: SELL lower strike call + BUY higher strike call = NET CREDIT.
+        
+        Max profit = net credit received
+        Max loss = (buy_strike - sell_strike) - net_credit
+        Breakeven = sell_strike + net_credit
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            sell_strike: Strike for short (sell) call (lower strike)
+            buy_strike: Strike for long (buy) call (higher strike, protection)
+            quantity: Number of contracts
+            limit_price: Net credit limit (should be positive)
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for both legs
+        sell_call_symbol = f"{symbol_padded}{exp_str}C{int(sell_strike * 1000):08d}"
+        buy_call_symbol = f"{symbol_padded}{exp_str}C{int(buy_strike * 1000):08d}"
+        
+        # Build 2-leg order (vertical spread)
+        order = {
+            "orderType": "NET_CREDIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": sell_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": buy_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
+    def create_bear_call_spread_exit_order(
+        self,
+        symbol: str,
+        expiration: str,
+        sell_strike: float,
+        buy_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "GTC"
+    ) -> Dict[str, Any]:
+        """
+        Create a bear call spread EXIT order (2-leg closing order).
+        This closes an existing bear call spread by reversing both legs.
+        
+        Entry was: SELL lower call, BUY higher call (net credit)
+        Exit is: BUY lower call, SELL higher call (net debit)
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            sell_strike: Strike for the call that was sold
+            buy_strike: Strike for the call that was bought
+            quantity: Number of contracts
+            limit_price: Max net debit willing to pay to close (should be less than entry credit for profit)
+            duration: Order duration (recommend GTC for set-and-forget)
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for both legs
+        sell_call_symbol = f"{symbol_padded}{exp_str}C{int(sell_strike * 1000):08d}"
+        buy_call_symbol = f"{symbol_padded}{exp_str}C{int(buy_strike * 1000):08d}"
+        
+        # Build 2-leg EXIT order (reverse both instructions from entry)
+        order = {
+            "orderType": "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": sell_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": buy_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
     def export_order(
         self,
         order: Dict[str, Any],

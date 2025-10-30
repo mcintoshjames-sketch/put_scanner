@@ -4760,6 +4760,26 @@ with tabs[6]:
                                             limit_price=float(limit_price),
                                             duration=order_duration
                                         )
+                                    elif selected_strategy == "BULL_PUT_SPREAD":
+                                        order = trader.create_bull_put_spread_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                                        order = trader.create_bear_call_spread_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
                                     
                                     # Validate order first
                                     validation = trader.validate_order(order)
@@ -4926,6 +4946,28 @@ with tabs[6]:
                                     duration=order_duration
                                 )
                                 strategy_type = "iron_condor"
+                            elif selected_strategy == "BULL_PUT_SPREAD":
+                                order = trader.create_bull_put_spread_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    sell_strike=float(selected['SellStrike']),
+                                    buy_strike=float(selected['BuyStrike']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "bull_put_spread"
+                            elif selected_strategy == "BEAR_CALL_SPREAD":
+                                order = trader.create_bear_call_spread_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    sell_strike=float(selected['SellStrike']),
+                                    buy_strike=float(selected['BuyStrike']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "bear_call_spread"
                             
                             # Validate order
                             validation = trader.validate_order(order)
@@ -5093,6 +5135,52 @@ with tabs[6]:
                                         }
                                         exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
                                     
+                                    elif selected_strategy == "BULL_PUT_SPREAD":
+                                        # Exit: Close entire spread (both legs) as net debit
+                                        entry_credit = float(selected['NetCredit'])
+                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                        
+                                        exit_order = trader.create_bull_put_spread_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration="GTC"
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
+                                        }
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                    
+                                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                                        # Exit: Close entire spread (both legs) as net debit
+                                        entry_credit = float(selected['NetCredit'])
+                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                        
+                                        exit_order = trader.create_bear_call_spread_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration="GTC"
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
+                                        }
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                    
                                     # Generate stop-loss orders if requested
                                     stop_loss_result = None
                                     if generate_stop_loss:
@@ -5163,6 +5251,56 @@ with tabs[6]:
                                                 short_put_strike=float(selected['PutShortStrike']),
                                                 short_call_strike=float(selected['CallShortStrike']),
                                                 long_call_strike=float(selected['CallLongStrike']),
+                                                quantity=int(num_contracts),
+                                                limit_price=stop_loss_debit,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                                "entry_credit": entry_credit,
+                                                "stop_loss_debit": stop_loss_debit,
+                                                "max_loss_per_contract": max_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                        
+                                        elif selected_strategy == "BULL_PUT_SPREAD":
+                                            # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
+                                            entry_credit = float(selected['NetCredit'])
+                                            stop_loss_debit = entry_credit * risk_multiplier
+                                            max_loss = (stop_loss_debit - entry_credit) * 100
+                                            
+                                            stop_loss_order = trader.create_bull_put_spread_exit_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                sell_strike=float(selected['SellStrike']),
+                                                buy_strike=float(selected['BuyStrike']),
+                                                quantity=int(num_contracts),
+                                                limit_price=stop_loss_debit,
+                                                duration="GTC"
+                                            )
+                                            stop_loss_metadata = {
+                                                **metadata,
+                                                "order_type": "STOP_LOSS",
+                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                                "entry_credit": entry_credit,
+                                                "stop_loss_debit": stop_loss_debit,
+                                                "max_loss_per_contract": max_loss
+                                            }
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                        
+                                        elif selected_strategy == "BEAR_CALL_SPREAD":
+                                            # Risk: Close if total spread cost reaches 2x entry credit
+                                            entry_credit = float(selected['NetCredit'])
+                                            stop_loss_debit = entry_credit * risk_multiplier
+                                            max_loss = (stop_loss_debit - entry_credit) * 100
+                                            
+                                            stop_loss_order = trader.create_bear_call_spread_exit_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                sell_strike=float(selected['SellStrike']),
+                                                buy_strike=float(selected['BuyStrike']),
                                                 quantity=int(num_contracts),
                                                 limit_price=stop_loss_debit,
                                                 duration="GTC"
