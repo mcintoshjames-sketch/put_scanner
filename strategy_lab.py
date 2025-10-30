@@ -564,6 +564,237 @@ def _norm_cdf(x):
         return float("nan")
 
 
+# ----------------------------- Expiration Safety Module -----------------------------
+
+def check_expiration_risk(expiration_str: str, strategy: str, open_interest: int = 0, 
+                          bid_ask_spread_pct: float = 0.0) -> dict:
+    """
+    Analyze expiration date risk and return comprehensive safety assessment.
+    
+    Args:
+        expiration_str: Expiration date string (e.g., "2025-11-15")
+        strategy: Strategy type ("CSP", "CC", "Collar", "Bull Put Spread", "Bear Call Spread", "Iron Condor")
+        open_interest: Open interest for the option(s)
+        bid_ask_spread_pct: Bid-ask spread as percentage of mid price
+    
+    Returns:
+        dict with keys:
+            - is_standard: bool (True if standard Friday expiration)
+            - expiration_type: str ("Monthly 3rd Friday", "Weekly Friday", "Non-Standard")
+            - day_of_week: str (e.g., "Friday", "Monday")
+            - risk_level: str ("LOW", "MEDIUM", "HIGH", "EXTREME")
+            - action: str ("ALLOW", "WARN", "BLOCK")
+            - warning_message: str (human-readable warning)
+            - risk_factors: list[str] (specific concerns)
+    """
+    try:
+        exp_date = datetime.strptime(expiration_str, "%Y-%m-%d").date()
+    except Exception:
+        return {
+            "is_standard": False,
+            "expiration_type": "Invalid Date",
+            "day_of_week": "Unknown",
+            "risk_level": "EXTREME",
+            "action": "BLOCK",
+            "warning_message": "⛔ INVALID EXPIRATION DATE",
+            "risk_factors": ["Cannot parse expiration date"]
+        }
+    
+    day_of_week = exp_date.strftime("%A")
+    weekday_num = exp_date.weekday()  # 0=Monday, 4=Friday
+    
+    # Check if it's a Friday
+    is_friday = (weekday_num == 4)
+    
+    # Check if it's the 3rd Friday (monthly standard)
+    first_day = exp_date.replace(day=1)
+    first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
+    third_friday = first_friday + timedelta(days=14)
+    is_third_friday = (exp_date == third_friday)
+    
+    risk_factors = []
+    
+    # Determine expiration type
+    if is_third_friday:
+        expiration_type = "Monthly (3rd Friday)"
+        is_standard = True
+        base_risk = "LOW"
+    elif is_friday:
+        expiration_type = "Weekly (Friday)"
+        is_standard = True
+        base_risk = "MEDIUM"
+        risk_factors.append("Weekly option - verify liquidity")
+    else:
+        expiration_type = f"Non-Standard ({day_of_week})"
+        is_standard = False
+        base_risk = "HIGH"
+        risk_factors.append(f"⚠️ Expires on {day_of_week} (not Friday)")
+    
+    # Liquidity assessment
+    if open_interest > 0:
+        if open_interest < 100:
+            risk_factors.append(f"Very low OI ({open_interest}) - poor liquidity")
+        elif open_interest < 500:
+            risk_factors.append(f"Low OI ({open_interest}) - limited liquidity")
+        elif open_interest < 1000 and not is_standard:
+            risk_factors.append(f"Moderate OI ({open_interest}) but non-standard expiration")
+    
+    if bid_ask_spread_pct > 0:
+        if bid_ask_spread_pct > 10.0:
+            risk_factors.append(f"Extremely wide spread ({bid_ask_spread_pct:.1f}%)")
+        elif bid_ask_spread_pct > 5.0:
+            risk_factors.append(f"Wide spread ({bid_ask_spread_pct:.1f}%)")
+        elif bid_ask_spread_pct > 3.0 and not is_standard:
+            risk_factors.append(f"Spread {bid_ask_spread_pct:.1f}% on non-standard expiration")
+    
+    # Strategy-specific risk assessment
+    strategy_risk_map = {
+        "CSP": {
+            "standard": "LOW",
+            "weekly": "MEDIUM",
+            "nonstandard": "HIGH",
+            "multi_leg": False
+        },
+        "CC": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "HIGH",
+            "multi_leg": False
+        },
+        "Collar": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "HIGH",
+            "multi_leg": True
+        },
+        "Bull Put Spread": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        },
+        "Bear Call Spread": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        },
+        "Iron Condor": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        }
+    }
+    
+    strat_info = strategy_risk_map.get(strategy, {
+        "standard": "MEDIUM",
+        "weekly": "HIGH",
+        "nonstandard": "EXTREME",
+        "multi_leg": False
+    })
+    
+    # Determine final risk level
+    if is_third_friday:
+        risk_level = strat_info["standard"]
+    elif is_friday:
+        risk_level = strat_info["weekly"]
+    else:
+        risk_level = strat_info["nonstandard"]
+    
+    # Escalate risk based on liquidity
+    if open_interest > 0 and open_interest < 100:
+        if risk_level == "LOW":
+            risk_level = "MEDIUM"
+        elif risk_level == "MEDIUM":
+            risk_level = "HIGH"
+    
+    if bid_ask_spread_pct > 5.0 and risk_level in ["LOW", "MEDIUM"]:
+        risk_level = "HIGH"
+    
+    # Multi-leg strategies get extra scrutiny
+    if strat_info["multi_leg"] and not is_standard:
+        if open_interest < 1000:
+            risk_factors.append("⛔ Multi-leg strategy requires OI > 1000 for non-standard expirations")
+            risk_level = "EXTREME"
+    
+    # Determine action
+    if risk_level == "EXTREME":
+        action = "BLOCK"
+        warning_icon = "⛔"
+    elif risk_level == "HIGH":
+        if strat_info["multi_leg"]:
+            action = "BLOCK"  # Block high-risk multi-leg
+            warning_icon = "⛔"
+        else:
+            action = "WARN"
+            warning_icon = "⚠️"
+    elif risk_level == "MEDIUM":
+        action = "WARN"
+        warning_icon = "⚠️"
+    else:
+        action = "ALLOW"
+        warning_icon = "✅"
+    
+    # Build warning message
+    if action == "BLOCK":
+        warning_message = f"⛔ BLOCKED: {expiration_type} - {strategy}"
+    elif action == "WARN":
+        warning_message = f"⚠️ WARNING: {expiration_type} - {strategy}"
+    else:
+        warning_message = f"✅ Standard: {expiration_type}"
+    
+    return {
+        "is_standard": is_standard,
+        "expiration_type": expiration_type,
+        "day_of_week": day_of_week,
+        "risk_level": risk_level,
+        "action": action,
+        "warning_message": warning_message,
+        "risk_factors": risk_factors
+    }
+
+
+def display_expiration_warning(risk_info: dict) -> None:
+    """Display expiration risk warning in Streamlit UI."""
+    if risk_info["action"] == "BLOCK":
+        st.error(f"""
+**{risk_info['warning_message']}**
+
+This combination is too risky and has been blocked:
+- Expiration: {risk_info['expiration_type']}
+- Risk Level: {risk_info['risk_level']}
+
+**Risk Factors:**
+{chr(10).join('• ' + factor for factor in risk_info['risk_factors'])}
+
+**Why Blocked:**
+- Multi-leg strategies on non-standard expirations have extreme liquidity risk
+- Wide spreads on entry/exit can eliminate profit potential
+- Difficult to close positions early if needed
+- Higher risk of partial fills leaving you exposed
+
+**Recommendation:** Use standard Friday expirations (preferably 3rd Friday of month)
+        """)
+    elif risk_info["action"] == "WARN":
+        st.warning(f"""
+**{risk_info['warning_message']}**
+
+**Risk Factors:**
+{chr(10).join('• ' + factor for factor in risk_info['risk_factors'])}
+
+**Proceed with caution:**
+- Verify Open Interest > 500 (preferably > 1,000)
+- Check bid-ask spread < 3% of mid price
+- Plan to hold to expiration (harder to exit early)
+- Consider using standard Friday expiration instead
+        """)
+    else:
+        st.success(f"✅ {risk_info['expiration_type']} - Standard expiration with acceptable risk")
+
+
+# ----------------------------- Black-Scholes & Greeks -----------------------------
+
 def _bs_d1_d2(S, K, r, sigma, T, q=0.0):
     # Merton w/ continuous dividend yield q
     if S <= 0 or K <= 0 or sigma <= 0 or T <= 0:
@@ -1074,6 +1305,8 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
 
             oi = _safe_int(_get_num_from_row(
                 r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(
+                r, ["volume", "Volume", "vol"], 0), 0)
             if min_oi and oi < int(min_oi):
                 continue
             counters["oi_pass"] += 1
@@ -1149,6 +1382,54 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 # Days from TODAY to earnings (negative = earnings passed)
                 days_to_earnings = (
                     earn_date - datetime.now(timezone.utc).date()).days
+            
+            # ===== HARD FILTER: Earnings within 3 days is intolerable risk =====
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                # Skip this opportunity entirely - earnings too close
+                continue
+            
+            # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+            # Tenor penalty: 21-45 DTE is sweet spot for CSP
+            tenor_ok = 21 <= D <= 45
+            tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+            
+            # Volume/OI penalty: check liquidity health
+            vol_oi_ratio = vol / oi if (oi > 0 and vol == vol) else 0.0
+            if vol_oi_ratio >= 0.5:
+                vol_penalty = 1.0  # Healthy turnover
+            elif vol_oi_ratio >= 0.25:
+                vol_penalty = 0.85  # Moderate, 15% reduction
+            else:
+                vol_penalty = 0.65  # Stale OI risk, 35% reduction
+            
+            # Earnings proximity penalty (beyond hard filter)
+            if days_to_earnings is not None and days_to_earnings <= D + 7:
+                # Earnings within cycle or shortly after
+                earnings_penalty = 0.60  # 40% reduction - high vol event risk
+            else:
+                earnings_penalty = 1.0  # Safe
+            
+            # Theta/Gamma penalty: ≥1.0 is preferred
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio >= 1.0:
+                    tg_penalty = 1.0  # Good risk-adjusted decay
+                elif theta_gamma_ratio >= 0.5:
+                    tg_penalty = 0.85  # Acceptable, 15% reduction
+                else:
+                    tg_penalty = 0.70  # High gamma risk, 30% reduction
+            else:
+                tg_penalty = 0.85  # Unknown, slight penalty
+            
+            # Apply all penalties to base score
+            score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
+
+            # Check expiration risk
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="CSP",
+                open_interest=oi,
+                bid_ask_spread_pct=spread_pct or 0.0
+            )
 
             rows.append({
                 "Strategy": "CSP",
@@ -1168,8 +1449,14 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
                 "Spread%": round(spread_pct, 2) if spread_pct is not None else float("nan"),
                 "OI": oi, "Collateral": int(collateral),
+                "Volume": vol,
                 "DaysToEarnings": days_to_earnings,
-                "Score": round(score, 6)
+                "Score": round(score, 6),
+                
+                # Expiration risk assessment
+                "ExpType": exp_risk["expiration_type"],
+                "ExpRisk": exp_risk["risk_level"],
+                "ExpAction": exp_risk["action"],
             })
             counters["final"] += 1
     df = pd.DataFrame(rows)
@@ -1249,6 +1536,8 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
 
             oi = _safe_int(_get_num_from_row(
                 r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(
+                r, ["volume", "Volume", "vol"], 0), 0)
             if min_oi and oi < int(min_oi):
                 continue
 
@@ -1305,6 +1594,54 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             if earn_date is not None:
                 days_to_earnings = (
                     earn_date - datetime.now(timezone.utc).date()).days
+            
+            # ===== HARD FILTER: Earnings within 3 days is intolerable risk =====
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                # Skip this opportunity entirely - earnings too close
+                continue
+            
+            # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+            # Tenor penalty: 21-45 DTE is sweet spot for CC
+            tenor_ok = 21 <= D <= 45
+            tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+            
+            # Volume/OI penalty: check liquidity health
+            vol_oi_ratio = vol / oi if (oi > 0 and vol == vol) else 0.0
+            if vol_oi_ratio >= 0.5:
+                vol_penalty = 1.0  # Healthy turnover
+            elif vol_oi_ratio >= 0.25:
+                vol_penalty = 0.85  # Moderate, 15% reduction
+            else:
+                vol_penalty = 0.65  # Stale OI risk, 35% reduction
+            
+            # Earnings proximity penalty (beyond hard filter)
+            if days_to_earnings is not None and days_to_earnings <= D + 7:
+                # Earnings within cycle or shortly after
+                earnings_penalty = 0.60  # 40% reduction - high vol event risk
+            else:
+                earnings_penalty = 1.0  # Safe
+            
+            # Theta/Gamma penalty: ≥1.0 is preferred
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio >= 1.0:
+                    tg_penalty = 1.0  # Good risk-adjusted decay
+                elif theta_gamma_ratio >= 0.5:
+                    tg_penalty = 0.85  # Acceptable, 15% reduction
+                else:
+                    tg_penalty = 0.70  # High gamma risk, 30% reduction
+            else:
+                tg_penalty = 0.85  # Unknown, slight penalty
+            
+            # Apply all penalties to base score
+            score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
+
+            # Check expiration risk
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="CC",
+                open_interest=oi,
+                bid_ask_spread_pct=spread_pct or 0.0
+            )
 
             rows.append({
                 "Strategy": "CC",
@@ -1318,10 +1655,16 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
                 "Spread%": round(spread_pct, 2) if spread_pct is not None else float("nan"),
                 "OI": oi, "Capital": int(S * 100.0),
+                "Volume": vol,
                 "DivYld%": round(div_y * 100.0, 2),
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
-                "DivAnnualPS": round(div_ps_annual, 4)
+                "DivAnnualPS": round(div_ps_annual, 4),
+                
+                # Expiration risk assessment
+                "ExpType": exp_risk["expiration_type"],
+                "ExpRisk": exp_risk["risk_level"],
+                "ExpAction": exp_risk["action"],
             })
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -1395,8 +1738,10 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
                     prem)
                 oi = _safe_int(_get_num_from_row(
                     r, ["openInterest", "oi", "open_interest"], 0), 0)
+                vol = _safe_int(_get_num_from_row(
+                    r, ["volume", "Volume", "vol"], 0), 0)
                 out.append({"K": K, "prem": prem, "delta": cd,
-                           "iv": iv, "spread%": spread_pct, "oi": oi})
+                           "iv": iv, "spread%": spread_pct, "oi": oi, "volume": vol})
             return pd.DataFrame(out)
 
         def _add_put_delta(df):
@@ -1423,8 +1768,10 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
                     prem)
                 oi = _safe_int(_get_num_from_row(
                     r, ["openInterest", "oi", "open_interest"], 0), 0)
+                vol = _safe_int(_get_num_from_row(
+                    r, ["volume", "Volume", "vol"], 0), 0)
                 out.append({"K": K, "prem": prem, "delta": pdlt,
-                           "iv": iv, "spread%": spread_pct, "oi": oi})
+                           "iv": iv, "spread%": spread_pct, "oi": oi, "volume": vol})
             return pd.DataFrame(out)
 
         cdf = _add_call_delta(calls)
@@ -1486,9 +1833,48 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
         score = 0.45 * roi_ann + 0.25 * \
             max(0.0, put_cushion) / 3.0 + 0.15 * \
             max(0.0, call_cushion) / 3.0 + 0.15 * liq_score
+        
+        # ===== HARD FILTER: High dividend assignment risk is intolerable =====
+        if assign_risk:
+            # Skip - call will likely be assigned for dividend capture
+            continue
+        
+        # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+        # Tenor penalty: 30-60 DTE is sweet spot for Collar (longer-term protection)
+        tenor_ok = 30 <= D <= 60
+        tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+        
+        # Volume/OI penalty: use worse of call/put liquidity
+        call_vol = _safe_int(c_row["volume"], 0)
+        put_vol = _safe_int(p_row["volume"], 0)
+        call_oi = _safe_int(c_row["oi"], 0)
+        put_oi = _safe_int(p_row["oi"], 0)
+        
+        # Calculate vol/oi for both legs, use minimum (worst case)
+        call_vol_oi = call_vol / call_oi if call_oi > 0 else 0.0
+        put_vol_oi = put_vol / put_oi if put_oi > 0 else 0.0
+        vol_oi_ratio = min(call_vol_oi, put_vol_oi)
+        
+        if vol_oi_ratio >= 0.5:
+            vol_penalty = 1.0  # Healthy turnover on both legs
+        elif vol_oi_ratio >= 0.25:
+            vol_penalty = 0.85  # Moderate, 15% reduction
+        else:
+            vol_penalty = 0.65  # Stale OI risk, 35% reduction
+        
+        # Apply all penalties to base score
+        score = score * tenor_penalty * vol_penalty
 
         floor = (p_row["K"] - S) + net_credit
         cap_to_call = (c_row["K"] - S) + net_credit
+
+        # Check expiration risk for Collar (2-leg strategy)
+        exp_risk = check_expiration_risk(
+            expiration_str=exp,
+            strategy="Collar",
+            open_interest=min(_safe_int(c_row["oi"], 0), _safe_int(p_row["oi"], 0)),  # Use worst case
+            bid_ask_spread_pct=max(c_row["spread%"] or 0.0, p_row["spread%"] or 0.0)  # Use worst case
+        )
 
         rows.append({
             "Strategy": "COLLAR",
@@ -1505,12 +1891,18 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
             "CallSpread%": round(float(c_row["spread%"]), 2) if c_row["spread%"] is not None else float("nan"),
             "PutSpread%": round(float(p_row["spread%"]), 2) if p_row["spread%"] is not None else float("nan"),
             "CallOI": _safe_int(c_row["oi"], 0), "PutOI": _safe_int(p_row["oi"], 0),
+            "CallVolume": _safe_int(c_row["volume"], 0), "PutVolume": _safe_int(p_row["volume"], 0),
             "Floor$/sh": round(floor, 2), "Cap$/sh": round(cap_to_call, 2),
             "PutCushionσ": round(put_cushion, 2) if put_cushion == put_cushion else float("nan"),
             "CallCushionσ": round(call_cushion, 2) if call_cushion == call_cushion else float("nan"),
             "DivInWindow": round(div_in_period, 4),
             "AssignRisk": bool(assign_risk),
-            "Score": round(score, 6)
+            "Score": round(score, 6),
+            
+            # Expiration risk assessment
+            "ExpType": exp_risk["expiration_type"],
+            "ExpRisk": exp_risk["risk_level"],
+            "ExpAction": exp_risk["action"],
         })
 
     df = pd.DataFrame(rows)
@@ -1591,11 +1983,12 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
                 continue
             
             oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0)
             spread_pct = compute_spread_pct(bid, ask, prem)
             
             puts_sell.append({
                 "K": K, "prem": prem, "delta": pd_val, "iv": iv,
-                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+                "spread%": spread_pct, "oi": oi, "volume": vol, "bid": bid, "ask": ask
             })
         
         # Find short call (sell) - target delta around +0.16 (84% POEW)
@@ -1619,11 +2012,12 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
                 continue
             
             oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0)
             spread_pct = compute_spread_pct(bid, ask, prem)
             
             calls_sell.append({
                 "K": K, "prem": prem, "delta": cd_val, "iv": iv,
-                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+                "spread%": spread_pct, "oi": oi, "volume": vol, "bid": bid, "ask": ask
             })
         
         if not puts_sell or not calls_sell:
@@ -1766,6 +2160,48 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
                  0.20 * cushion_score +
                  0.10 * liq_score)
         
+        # ===== HARD FILTER: Extremely low liquidity is intolerable for 4-leg strategy =====
+        # Iron Condor requires tighter liquidity due to 4 legs to manage
+        ps_oi = int(ps_row["oi"]) if ps_row["oi"] == ps_row["oi"] else 0
+        cs_oi = int(cs_row["oi"]) if cs_row["oi"] == cs_row["oi"] else 0
+        min_oi_all_legs = min(ps_oi, pl_oi, cs_oi, cl_oi)
+        if min_oi_all_legs < 50:  # Stricter than other strategies
+            # Skip - insufficient liquidity across all legs
+            continue
+        
+        # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+        # Tenor penalty: 30-60 DTE is sweet spot for Iron Condor
+        tenor_ok = 30 <= D <= 60
+        tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+        
+        # Volume/OI penalty: STRICTER for 4-leg strategy (use worst leg)
+        ps_vol = int(ps_row["volume"]) if ps_row["volume"] == ps_row["volume"] else 0
+        cs_vol = int(cs_row["volume"]) if cs_row["volume"] == cs_row["volume"] else 0
+        
+        ps_vol_oi = ps_vol / ps_oi if ps_oi > 0 else 0.0
+        cs_vol_oi = cs_vol / cs_oi if cs_oi > 0 else 0.0
+        
+        # Use minimum of short legs (most critical for liquidity)
+        vol_oi_ratio = min(ps_vol_oi, cs_vol_oi)
+        
+        if vol_oi_ratio >= 0.5:
+            vol_penalty = 1.0  # Healthy turnover
+        elif vol_oi_ratio >= 0.3:  # STRICTER: 0.3 instead of 0.25 for 4-leg
+            vol_penalty = 0.80  # 20% reduction (stricter)
+        else:
+            vol_penalty = 0.55  # 45% reduction (much stricter for IC)
+        
+        # Apply all penalties to base score
+        score = score * tenor_penalty * vol_penalty
+        
+        # Check expiration risk for Iron Condor (4-leg strategy - EXTREME sensitivity)
+        exp_risk = check_expiration_risk(
+            expiration_str=exp,
+            strategy="Iron Condor",
+            open_interest=min(int(ps_row["oi"]), int(cs_row["oi"])),  # Use worst case across all legs
+            bid_ask_spread_pct=avg_spread
+        )
+        
         rows.append({
             "Strategy": "IRON_CONDOR",
             "Ticker": ticker,
@@ -1806,9 +2242,16 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             "CallSpread%": round(float(cs_row["spread%"]), 2) if cs_row["spread%"] is not None else float("nan"),
             "PutShortOI": int(ps_row["oi"]),
             "CallShortOI": int(cs_row["oi"]),
+            "PutShortVolume": int(ps_row["volume"]),
+            "CallShortVolume": int(cs_row["volume"]),
             
             "IV": round(iv_avg * 100.0, 2),
-            "Score": round(score, 6)
+            "Score": round(score, 6),
+            
+            # Expiration risk assessment
+            "ExpType": exp_risk["expiration_type"],
+            "ExpRisk": exp_risk["risk_level"],
+            "ExpAction": exp_risk["action"],
         })
     
     df = pd.DataFrame(rows)
@@ -1893,11 +2336,12 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 continue
             
             oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0)
             spread_pct = compute_spread_pct(bid, ask, prem)
             
             puts_sell.append({
                 "K": K, "prem": prem, "delta": pd_val, "iv": iv,
-                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+                "spread%": spread_pct, "oi": oi, "volume": vol, "bid": bid, "ask": ask
             })
         
         if not puts_sell:
@@ -2040,6 +2484,54 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             if earn_date is not None:
                 days_to_earnings = (earn_date - datetime.now(timezone.utc).date()).days
             
+            # ===== HARD FILTER: Earnings within 3 days is intolerable risk =====
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                # Skip this opportunity entirely - earnings too close
+                continue
+            
+            # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+            # Tenor penalty: 21-45 DTE is sweet spot for Bull Put Spread
+            tenor_ok = 21 <= D <= 45
+            tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+            
+            # Volume/OI penalty: check liquidity health on short leg
+            vol_oi_ratio = vol / ps["oi"] if (ps["oi"] > 0 and vol == vol) else 0.0
+            if vol_oi_ratio >= 0.5:
+                vol_penalty = 1.0  # Healthy turnover
+            elif vol_oi_ratio >= 0.25:
+                vol_penalty = 0.85  # Moderate, 15% reduction
+            else:
+                vol_penalty = 0.65  # Stale OI risk, 35% reduction
+            
+            # Earnings proximity penalty (beyond hard filter)
+            if days_to_earnings is not None and days_to_earnings <= D + 7:
+                # Earnings within cycle or shortly after
+                earnings_penalty = 0.60  # 40% reduction - high vol event risk
+            else:
+                earnings_penalty = 1.0  # Safe
+            
+            # Theta/Gamma penalty: ≥1.0 is preferred
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio >= 1.0:
+                    tg_penalty = 1.0  # Good risk-adjusted decay
+                elif theta_gamma_ratio >= 0.5:
+                    tg_penalty = 0.85  # Acceptable, 15% reduction
+                else:
+                    tg_penalty = 0.70  # High gamma risk, 30% reduction
+            else:
+                tg_penalty = 0.85  # Unknown, slight penalty
+            
+            # Apply all penalties to base score
+            score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
+            
+            # Check expiration risk for Bull Put Spread (2-leg strategy)
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="Bull Put Spread",
+                open_interest=ps["oi"],  # Use short leg OI (typically worst case)
+                bid_ask_spread_pct=ps["spread%"] or 0.0
+            )
+            
             rows.append({
                 "Strategy": "BullPutSpread",
                 "Ticker": ticker,
@@ -2064,12 +2556,18 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
                 "Spread%": round(ps["spread%"], 2) if ps["spread%"] is not None else float("nan"),
                 "OI": ps["oi"],
+                "Volume": ps["volume"],
                 "Capital": int(capital_at_risk),
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
-                "BuyLeg": None
+                "BuyLeg": None,
+                
+                # Expiration risk assessment
+                "ExpType": exp_risk["expiration_type"],
+                "ExpRisk": exp_risk["risk_level"],
+                "ExpAction": exp_risk["action"],
             })
     
     df = pd.DataFrame(rows)
@@ -2154,11 +2652,12 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 continue
             
             oi = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+            vol = _safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0)
             spread_pct = compute_spread_pct(bid, ask, prem)
             
             calls_sell.append({
                 "K": K, "prem": prem, "delta": cd_val, "iv": iv,
-                "spread%": spread_pct, "oi": oi, "bid": bid, "ask": ask
+                "spread%": spread_pct, "oi": oi, "volume": vol, "bid": bid, "ask": ask
             })
         
         if not calls_sell:
@@ -2298,6 +2797,54 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             if earn_date is not None:
                 days_to_earnings = (earn_date - datetime.now(timezone.utc).date()).days
             
+            # ===== HARD FILTER: Earnings within 3 days is intolerable risk =====
+            if days_to_earnings is not None and 0 <= days_to_earnings <= 3:
+                # Skip this opportunity entirely - earnings too close
+                continue
+            
+            # ===== APPLY BEST-PRACTICE PENALTIES TO SCORE =====
+            # Tenor penalty: 21-45 DTE is sweet spot for Bear Call Spread
+            tenor_ok = 21 <= D <= 45
+            tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
+            
+            # Volume/OI penalty: check liquidity health on short leg
+            vol_oi_ratio = vol / cs["oi"] if (cs["oi"] > 0 and vol == vol) else 0.0
+            if vol_oi_ratio >= 0.5:
+                vol_penalty = 1.0  # Healthy turnover
+            elif vol_oi_ratio >= 0.25:
+                vol_penalty = 0.85  # Moderate, 15% reduction
+            else:
+                vol_penalty = 0.65  # Stale OI risk, 35% reduction
+            
+            # Earnings proximity penalty (beyond hard filter)
+            if days_to_earnings is not None and days_to_earnings <= D + 7:
+                # Earnings within cycle or shortly after
+                earnings_penalty = 0.60  # 40% reduction - high vol event risk
+            else:
+                earnings_penalty = 1.0  # Safe
+            
+            # Theta/Gamma penalty: ≥1.0 is preferred
+            if theta_gamma_ratio == theta_gamma_ratio:
+                if theta_gamma_ratio >= 1.0:
+                    tg_penalty = 1.0  # Good risk-adjusted decay
+                elif theta_gamma_ratio >= 0.5:
+                    tg_penalty = 0.85  # Acceptable, 15% reduction
+                else:
+                    tg_penalty = 0.70  # High gamma risk, 30% reduction
+            else:
+                tg_penalty = 0.85  # Unknown, slight penalty
+            
+            # Apply all penalties to base score
+            score = score * tenor_penalty * vol_penalty * earnings_penalty * tg_penalty
+            
+            # Check expiration risk for Bear Call Spread (2-leg strategy)
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="Bear Call Spread",
+                open_interest=cs["oi"],  # Use short leg OI (typically worst case)
+                bid_ask_spread_pct=cs["spread%"] or 0.0
+            )
+            
             rows.append({
                 "Strategy": "BearCallSpread",
                 "Ticker": ticker,
@@ -2322,12 +2869,18 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
                 "Spread%": round(cs["spread%"], 2) if cs["spread%"] is not None else float("nan"),
                 "OI": cs["oi"],
+                "Volume": cs["volume"],
                 "Capital": int(capital_at_risk),
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
-                "BuyLeg": None
+                "BuyLeg": None,
+                
+                # Expiration risk assessment
+                "ExpType": exp_risk["expiration_type"],
+                "ExpRisk": exp_risk["risk_level"],
+                "ExpAction": exp_risk["action"],
             })
     
     df = pd.DataFrame(rows)
@@ -2548,7 +3101,32 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
         flags["liquidity_warn"] = True
 
     # Volume/OI ratio (liquidity health check)
+    # For multi-leg strategies, try to get volume from different columns
     volume = float(_series_get(row, "Volume", float("nan")))
+    
+    # For spread strategies, try alternative volume columns
+    if volume != volume:  # if Volume is NaN, try alternatives
+        if strategy == "COLLAR":
+            # Use average of call and put volumes if available
+            call_vol = float(_series_get(row, "CallVolume", float("nan")))
+            put_vol = float(_series_get(row, "PutVolume", float("nan")))
+            if call_vol == call_vol and put_vol == put_vol:
+                volume = (call_vol + put_vol) / 2.0
+            elif call_vol == call_vol:
+                volume = call_vol
+            elif put_vol == put_vol:
+                volume = put_vol
+        elif strategy == "IRON_CONDOR":
+            # Use average of put and call short volumes
+            put_vol = float(_series_get(row, "PutShortVolume", float("nan")))
+            call_vol = float(_series_get(row, "CallShortVolume", float("nan")))
+            if put_vol == put_vol and call_vol == call_vol:
+                volume = (put_vol + call_vol) / 2.0
+            elif put_vol == put_vol:
+                volume = put_vol
+            elif call_vol == call_vol:
+                volume = call_vol
+    
     if volume == volume and oi > 0:
         vol_oi_ratio = volume / oi
         if vol_oi_ratio >= 0.5:
@@ -3862,6 +4440,32 @@ with st.sidebar:
         "Per-contract collateral cap ($, CSP)", min_value=0, value=0, step=1000, key="per_contract_cap_input")
     per_contract_cap = None if per_contract_cap == 0 else float(
         per_contract_cap)
+    
+    # Expiration safety controls
+    st.divider()
+    st.subheader("⚠️ Expiration Safety")
+    allow_nonstandard = st.checkbox(
+        "Include non-standard expirations (higher risk)",
+        value=False,
+        key="allow_nonstandard",
+        help="""
+        Non-standard = expires on Mon/Tue/Wed/Thu or unusual Fridays.
+        
+        Risks:
+        • Much lower liquidity (wider spreads, lower OI)
+        • Harder to exit early if needed
+        • Higher assignment risk (especially for CC)
+        • EXTREME risk for multi-leg strategies (spreads, IC)
+        
+        Only enable if you understand these risks and plan to hold to expiration.
+        """
+    )
+    block_high_risk_multileg = st.checkbox(
+        "Block high-risk multi-leg on non-standard dates",
+        value=True,
+        key="block_high_risk_multileg",
+        help="Automatically block spreads and Iron Condors on non-standard expirations (RECOMMENDED)"
+    )
 
     st.divider()
     st.subheader("Covered Call")
@@ -4196,6 +4800,85 @@ df_iron_condor = st.session_state["df_iron_condor"]
 df_bull_put_spread = st.session_state["df_bull_put_spread"]
 df_bear_call_spread = st.session_state["df_bear_call_spread"]
 
+# Apply expiration safety filtering
+allow_nonstandard = st.session_state.get("allow_nonstandard", False)
+block_high_risk_multileg = st.session_state.get("block_high_risk_multileg", True)
+
+# Count blocked items before filtering
+original_counts = {
+    "CSP": len(df_csp),
+    "CC": len(df_cc),
+    "Collar": len(df_collar),
+    "Iron Condor": len(df_iron_condor),
+    "Bull Put Spread": len(df_bull_put_spread),
+    "Bear Call Spread": len(df_bear_call_spread)
+}
+
+if not allow_nonstandard:
+    # Filter out non-standard expirations entirely
+    if not df_csp.empty and "ExpAction" in df_csp.columns:
+        df_csp = df_csp[df_csp["ExpAction"] != "BLOCK"].copy()
+    if not df_cc.empty and "ExpAction" in df_cc.columns:
+        df_cc = df_cc[df_cc["ExpAction"] != "BLOCK"].copy()
+    if not df_collar.empty and "ExpAction" in df_collar.columns:
+        df_collar = df_collar[df_collar["ExpAction"] != "BLOCK"].copy()
+    if not df_iron_condor.empty and "ExpAction" in df_iron_condor.columns:
+        df_iron_condor = df_iron_condor[df_iron_condor["ExpAction"] != "BLOCK"].copy()
+    if not df_bull_put_spread.empty and "ExpAction" in df_bull_put_spread.columns:
+        df_bull_put_spread = df_bull_put_spread[df_bull_put_spread["ExpAction"] != "BLOCK"].copy()
+    if not df_bear_call_spread.empty and "ExpAction" in df_bear_call_spread.columns:
+        df_bear_call_spread = df_bear_call_spread[df_bear_call_spread["ExpAction"] != "BLOCK"].copy()
+
+if block_high_risk_multileg:
+    # Additional blocking for multi-leg strategies on non-standard dates
+    if not df_iron_condor.empty and "ExpAction" in df_iron_condor.columns:
+        df_iron_condor = df_iron_condor[df_iron_condor["ExpAction"] == "ALLOW"].copy()
+    if not df_bull_put_spread.empty and "ExpAction" in df_bull_put_spread.columns and "ExpRisk" in df_bull_put_spread.columns:
+        df_bull_put_spread = df_bull_put_spread[
+            (df_bull_put_spread["ExpAction"] == "ALLOW") | 
+            ((df_bull_put_spread["ExpAction"] == "WARN") & (df_bull_put_spread["ExpRisk"] != "HIGH"))
+        ].copy()
+    if not df_bear_call_spread.empty and "ExpAction" in df_bear_call_spread.columns and "ExpRisk" in df_bear_call_spread.columns:
+        df_bear_call_spread = df_bear_call_spread[
+            (df_bear_call_spread["ExpAction"] == "ALLOW") | 
+            ((df_bear_call_spread["ExpAction"] == "WARN") & (df_bear_call_spread["ExpRisk"] != "HIGH"))
+        ].copy()
+
+# Calculate and display filtered counts
+filtered_counts = {
+    "CSP": len(df_csp),
+    "CC": len(df_cc),
+    "Collar": len(df_collar),
+    "Iron Condor": len(df_iron_condor),
+    "Bull Put Spread": len(df_bull_put_spread),
+    "Bear Call Spread": len(df_bear_call_spread)
+}
+
+# Show warning if items were filtered out
+blocked_any = False
+for strategy in original_counts:
+    diff = original_counts[strategy] - filtered_counts[strategy]
+    if diff > 0:
+        blocked_any = True
+
+if blocked_any and not allow_nonstandard:
+    st.info(f"""
+    **⚠️ Expiration Safety Filter Active**
+    
+    Filtered out non-standard expirations for your protection:
+    - CSP: {original_counts['CSP'] - filtered_counts['CSP']} blocked
+    - CC: {original_counts['CC'] - filtered_counts['CC']} blocked
+    - Collar: {original_counts['Collar'] - filtered_counts['Collar']} blocked
+    - Iron Condor: {original_counts['Iron Condor'] - filtered_counts['Iron Condor']} blocked
+    - Bull Put Spread: {original_counts['Bull Put Spread'] - filtered_counts['Bull Put Spread']} blocked
+    - Bear Call Spread: {original_counts['Bear Call Spread'] - filtered_counts['Bear Call Spread']} blocked
+    
+    **Why?** Non-standard expirations (Mon/Tue/Wed/Thu) have poor liquidity and higher risk.
+    
+    To see all results, enable "Include non-standard expirations" in the sidebar (not recommended).
+    """)
+
+
 # --- Universal Contract / Structure Picker (applies to all tabs) ---
 st.subheader("Selection — applies to Risk, Runbook, and Stress tabs")
 
@@ -4415,8 +5098,21 @@ with tabs[0]:
         st.info("Run a scan or loosen CSP filters.")
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
-                     "IV", "POEW", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Collateral", "DaysToEarnings", "Score"]
+                     "IV", "POEW", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Collateral", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_csp.columns]
+
+        # Show expiration risk warnings if any WARN actions exist
+        if "ExpAction" in df_csp.columns:
+            warn_count = len(df_csp[df_csp["ExpAction"] == "WARN"])
+            if warn_count > 0:
+                st.warning(f"""
+                ⚠️ **{warn_count} position(s) have non-standard expirations**
+                
+                Check the 'ExpType' and 'ExpRisk' columns. Non-standard expirations may have:
+                - Lower liquidity (wider spreads)
+                - Harder to exit early
+                - Consider using standard Friday expirations instead
+                """)
 
         # Add earnings warning info box
         if "DaysToEarnings" in df_csp.columns:
@@ -4432,6 +5128,8 @@ with tabs[0]:
         # Add earnings legend
         st.caption(
             "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
+            "**ExpType**: Monthly (3rd Fri), Weekly (Fri), or Non-Standard | "
+            "**ExpRisk**: LOW/MEDIUM/HIGH/EXTREME | "
             "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
         )
 
@@ -4442,8 +5140,23 @@ with tabs[1]:
         st.info("Run a scan or loosen CC filters.")
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
-                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "DivYld%", "DaysToEarnings", "Score"]
+                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "DivYld%", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_cc.columns]
+
+        # Show expiration risk warnings
+        if "ExpAction" in df_cc.columns:
+            warn_count = len(df_cc[df_cc["ExpAction"] == "WARN"])
+            if warn_count > 0:
+                st.warning(f"""
+                ⚠️ **{warn_count} position(s) have non-standard expirations**
+                
+                **HIGH RISK for Covered Calls:**
+                - Early assignment risk on non-Friday expirations
+                - May coincide with ex-dividend dates
+                - Harder to manage if stock moves against you
+                
+                **Recommendation:** Use standard Friday expirations only.
+                """)
 
         # Add earnings warning info box
         if "DaysToEarnings" in df_cc.columns:
@@ -4459,6 +5172,8 @@ with tabs[1]:
         # Add earnings legend
         st.caption(
             "**DaysToEarnings**: Days until next earnings (positive = future, negative = past, blank = unknown) | "
+            "**ExpType**: Monthly (3rd Fri), Weekly (Fri), or Non-Standard | "
+            "**ExpRisk**: LOW/MEDIUM/HIGH (assignment risk) | "
             "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
         )
 
@@ -4471,8 +5186,24 @@ with tabs[2]:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
                      "CallStrike", "CallPrem", "PutStrike", "PutPrem", "NetCredit",
                      "ROI%_ann", "CallΔ", "PutΔ", "CallSpread%", "PutSpread%", "CallOI", "PutOI",
-                     "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "Score"]
+                     "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_collar.columns]
+        
+        # Show expiration risk warnings
+        if "ExpAction" in df_collar.columns:
+            warn_count = len(df_collar[df_collar["ExpAction"] == "WARN"])
+            if warn_count > 0:
+                st.warning(f"""
+                ⚠️ **{warn_count} position(s) have non-standard expirations**
+                
+                **2-Leg Strategy Risk:**
+                - Must manage both call and put sides
+                - Liquidity issues on BOTH legs
+                - Harder to adjust or roll
+                
+                Use OI > 1,000 on both legs if trading non-standard dates.
+                """)
+        
         st.dataframe(df_collar[show_cols],
                      use_container_width=True, height=520)
 
@@ -4488,8 +5219,26 @@ with tabs[3]:
                      "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills",
                      "BreakevenLower", "BreakevenUpper", "Range",
                      "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
-                     "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "Score"]
+                     "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_iron_condor.columns]
+        
+        # Show expiration risk warnings - STRONGEST WARNING
+        if "ExpAction" in df_iron_condor.columns:
+            warn_count = len(df_iron_condor[df_iron_condor["ExpAction"] == "WARN"])
+            block_count = len(df_iron_condor[df_iron_condor["ExpAction"] == "BLOCK"])
+            if warn_count > 0 or block_count > 0:
+                st.error(f"""
+                🚨 **EXTREME RISK: {warn_count + block_count} position(s) have non-standard expirations**
+                
+                **4-Leg Strategy - DO NOT TRADE:**
+                - All 4 legs must have excellent liquidity
+                - Non-standard dates = DISASTER for Iron Condors
+                - Cannot close positions without massive slippage
+                - Partial fills will leave you exposed
+                
+                ⛔ **BLOCKED** by default. Only use standard Friday expirations for Iron Condors.
+                """)
+        
         st.dataframe(df_iron_condor[show_cols],
                      use_container_width=True, height=520)
         
@@ -4497,6 +5246,8 @@ with tabs[3]:
             "**PutShortΔ/CallShortΔ**: Delta of short strikes (target ~±0.16 = 84% POEW) | "
             "**MaxLoss**: Wing width − net credit | "
             "**ROI%_ann**: (Net credit / Max loss) × (365 / Days) × 100 | "
+            "**ExpType**: ONLY use Monthly or Weekly Friday | "
+            "**ExpRisk**: Should be LOW only | "
             "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
         )
 
@@ -4511,8 +5262,24 @@ with tabs[4]:
                      "OTM%", "ROI%", "ROI%_ann",
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
                      "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
-                     "DaysToEarnings", "Score"]
+                     "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_bull_put_spread.columns]
+        
+        # Show expiration risk warnings
+        if "ExpAction" in df_bull_put_spread.columns:
+            warn_count = len(df_bull_put_spread[df_bull_put_spread["ExpAction"] == "WARN"])
+            if warn_count > 0:
+                st.warning(f"""
+                ⚠️ **{warn_count} position(s) have non-standard expirations**
+                
+                **2-Leg Spread Risk:**
+                - Liquidity on BOTH legs critical
+                - Wide spreads = reduced profit potential
+                - Risk of partial fills (one leg only)
+                
+                **Recommendation:** Use OI > 500 and spread < 3% on BOTH legs.
+                """)
+        
         st.dataframe(df_bull_put_spread[show_cols],
                      use_container_width=True, height=520)
         
@@ -4536,8 +5303,24 @@ with tabs[5]:
                      "OTM%", "ROI%", "ROI%_ann",
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
                      "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
-                     "DaysToEarnings", "Score"]
+                     "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_bear_call_spread.columns]
+        
+        # Show expiration risk warnings
+        if "ExpAction" in df_bear_call_spread.columns:
+            warn_count = len(df_bear_call_spread[df_bear_call_spread["ExpAction"] == "WARN"])
+            if warn_count > 0:
+                st.warning(f"""
+                ⚠️ **{warn_count} position(s) have non-standard expirations**
+                
+                **2-Leg Spread Risk:**
+                - Liquidity on BOTH legs critical
+                - Early assignment risk if deep ITM
+                - Wide spreads = reduced profit potential
+                
+                **Recommendation:** Use OI > 500 and spread < 3% on BOTH legs.
+                """)
+        
         st.dataframe(df_bear_call_spread[show_cols],
                      use_container_width=True, height=520)
         
@@ -4547,6 +5330,7 @@ with tabs[5]:
             "**Max Loss**: Spread width − net credit | "
             "**Breakeven**: Sell strike + net credit | "
             "**Capital**: Max loss × 100 (risk capital per contract) | "
+            "**ExpType**: Prefer Friday expirations | "
             "**Defined risk, no stock ownership required**"
         )
 
