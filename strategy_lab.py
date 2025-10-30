@@ -4124,9 +4124,19 @@ with tabs[4]:
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
                 
+                # Initialize session state for orders if not exists
+                if 'generated_orders' not in st.session_state:
+                    st.session_state.generated_orders = None
+                if 'preview_results' not in st.session_state:
+                    st.session_state.preview_results = {}
+                
                 # Generate order button (dry-run export)
                 with col_export:
                     if st.button("📥 Generate Order Files", type="primary", use_container_width=True):
+                        # Clear previous orders and previews
+                        st.session_state.generated_orders = None
+                        st.session_state.preview_results = {}
+                        
                         try:
                             from providers.schwab_trading import SchwabTrader, format_order_summary
                             
@@ -4493,354 +4503,27 @@ with tabs[4]:
                                     
                                     # Display success message and files
                                     order_count = 2 if not generate_stop_loss else 3
+                                    
+                                    # Store orders in session state for persistence across reruns
+                                    st.session_state.generated_orders = {
+                                        'entry_order': order,
+                                        'entry_result': result,
+                                        'exit_order': exit_order,
+                                        'exit_result': exit_result,
+                                        'stop_loss_order': stop_loss_order if generate_stop_loss else None,
+                                        'stop_loss_result': stop_loss_result if generate_stop_loss else None,
+                                        'generate_stop_loss': generate_stop_loss,
+                                        'profit_capture_pct': profit_capture_pct,
+                                        'risk_multiplier': risk_multiplier if generate_stop_loss else None,
+                                        'strategy_type': strategy_type,
+                                        'selected_strategy': selected_strategy,
+                                        # Store collar-specific orders if needed
+                                        'exit_order_call': exit_order_call if selected_strategy == "COLLAR" else None,
+                                        'exit_order_put': exit_order_put if selected_strategy == "COLLAR" else None,
+                                        'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
+                                    }
+                                    
                                     st.success(f"✅ {order_count} order files generated successfully!")
-                                    
-                                    # Create columns based on whether stop-loss is included
-                                    if generate_stop_loss:
-                                        col_entry, col_exit, col_stop = st.columns(3)
-                                    else:
-                                        col_entry, col_exit = st.columns(2)
-                                        col_stop = None
-                                    
-                                    with col_entry:
-                                        st.write("**📤 ENTRY Order**")
-                                        st.code(result['filepath'], language=None)
-                                        
-                                        # Show order summary
-                                        with st.expander("📄 Entry Order Details"):
-                                            st.text(format_order_summary(order))
-                                            st.json(order)
-                                        
-                                        # Preview and download buttons
-                                        col_preview_entry, col_dl_entry = st.columns(2)
-                                        
-                                        with col_preview_entry:
-                                            if st.button("🔍 Preview", key="preview_entry", use_container_width=True):
-                                                try:
-                                                    from providers.schwab_trading import SchwabTrader
-                                                    from providers.schwab import SchwabClient
-                                                    
-                                                    if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                        schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                        if schwab_client:
-                                                            trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                            with st.spinner("Previewing entry order..."):
-                                                                preview_result = trader.preview_order(order)
-                                                            
-                                                            if preview_result['status'] == 'preview_success':
-                                                                st.success("✅ Entry order preview received!")
-                                                                with st.expander("📊 Preview Details", expanded=True):
-                                                                    preview_data = preview_result['preview']
-                                                                    if isinstance(preview_data, dict):
-                                                                        if 'commission' in preview_data:
-                                                                            st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                                                        if 'estimatedTotalAmount' in preview_data:
-                                                                            st.metric("Estimated Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                                                        if 'buyingPowerEffect' in preview_data:
-                                                                            st.metric("Buying Power Impact", f"${preview_data['buyingPowerEffect']:.2f}")
-                                                                        if 'marginRequirement' in preview_data:
-                                                                            st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
-                                                                        st.json(preview_data)
-                                                                    else:
-                                                                        st.json(preview_data)
-                                                            else:
-                                                                st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
-                                                        else:
-                                                            st.error("Schwab client not available")
-                                                    else:
-                                                        st.error("Schwab provider not active")
-                                                except Exception as e:
-                                                    st.error(f"Error: {str(e)}")
-                                        
-                                        with col_dl_entry:
-                                            with open(result['filepath'], 'r') as f:
-                                                order_json = f.read()
-                                            
-                                            st.download_button(
-                                                label="⬇️ Download",
-                                                data=order_json,
-                                                file_name=result['filepath'].split('/')[-1],
-                                                mime="application/json",
-                                                key="download_entry",
-                                                use_container_width=True
-                                            )
-                                    
-                                    with col_exit:
-                                        if exit_result:
-                                            if isinstance(exit_result, dict) and 'call' in exit_result:
-                                                # Collar has multiple exit orders
-                                                st.write("**📥 EXIT Orders (Collar)**")
-                                                st.code(exit_result['call']['filepath'], language=None)
-                                                st.code(exit_result['put']['filepath'], language=None)
-                                                
-                                                with st.expander("📄 Exit Orders Details"):
-                                                    st.write("**Call Exit:**")
-                                                    st.json(exit_order_call)
-                                                    st.write("**Put Exit:**")
-                                                    st.json(exit_order_put)
-                                                
-                                                # Preview and download for call exit
-                                                col_preview_call, col_dl_call = st.columns(2)
-                                                with col_preview_call:
-                                                    if st.button("🔍 Preview Call", key="preview_exit_call", use_container_width=True):
-                                                        try:
-                                                            from providers.schwab_trading import SchwabTrader
-                                                            from providers.schwab import SchwabClient
-                                                            
-                                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                                if schwab_client:
-                                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                                    with st.spinner("Previewing call exit..."):
-                                                                        preview_result = trader.preview_order(exit_order_call)
-                                                                    
-                                                                    if preview_result['status'] == 'preview_success':
-                                                                        st.success("✅ Call exit preview received!")
-                                                                        with st.expander("📊 Call Preview", expanded=True):
-                                                                            preview_data = preview_result['preview']
-                                                                            if isinstance(preview_data, dict):
-                                                                                if 'commission' in preview_data:
-                                                                                    st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                                                                if 'estimatedTotalAmount' in preview_data:
-                                                                                    st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                                                                st.json(preview_data)
-                                                                            else:
-                                                                                st.json(preview_data)
-                                                                    else:
-                                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
-                                                                else:
-                                                                    st.error("Schwab client not available")
-                                                            else:
-                                                                st.error("Schwab provider not active")
-                                                        except Exception as e:
-                                                            st.error(f"Error: {str(e)}")
-                                                
-                                                with col_dl_call:
-                                                    with open(exit_result['call']['filepath'], 'r') as f:
-                                                        exit_call_json = f.read()
-                                                    st.download_button(
-                                                        label="⬇️ Download",
-                                                        data=exit_call_json,
-                                                        file_name=exit_result['call']['filepath'].split('/')[-1],
-                                                        mime="application/json",
-                                                        key="download_exit_call",
-                                                        use_container_width=True
-                                                    )
-                                                
-                                                # Preview and download for put exit
-                                                col_preview_put, col_dl_put = st.columns(2)
-                                                with col_preview_put:
-                                                    if st.button("🔍 Preview Put", key="preview_exit_put", use_container_width=True):
-                                                        try:
-                                                            from providers.schwab_trading import SchwabTrader
-                                                            from providers.schwab import SchwabClient
-                                                            
-                                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                                if schwab_client:
-                                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                                    with st.spinner("Previewing put exit..."):
-                                                                        preview_result = trader.preview_order(exit_order_put)
-                                                                    
-                                                                    if preview_result['status'] == 'preview_success':
-                                                                        st.success("✅ Put exit preview received!")
-                                                                        with st.expander("📊 Put Preview", expanded=True):
-                                                                            preview_data = preview_result['preview']
-                                                                            if isinstance(preview_data, dict):
-                                                                                if 'commission' in preview_data:
-                                                                                    st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                                                                if 'estimatedTotalAmount' in preview_data:
-                                                                                    st.metric("Est. Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                                                                st.json(preview_data)
-                                                                            else:
-                                                                                st.json(preview_data)
-                                                                    else:
-                                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
-                                                                else:
-                                                                    st.error("Schwab client not available")
-                                                            else:
-                                                                st.error("Schwab provider not active")
-                                                        except Exception as e:
-                                                            st.error(f"Error: {str(e)}")
-                                                
-                                                with col_dl_put:
-                                                    with open(exit_result['put']['filepath'], 'r') as f:
-                                                        exit_put_json = f.read()
-                                                    st.download_button(
-                                                        label="⬇️ Download",
-                                                        data=exit_put_json,
-                                                        file_name=exit_result['put']['filepath'].split('/')[-1],
-                                                        mime="application/json",
-                                                        key="download_exit_put",
-                                                        use_container_width=True
-                                                    )
-                                            else:
-                                                # Single exit order
-                                                st.write(f"**📥 EXIT Order ({profit_capture_pct}% profit target)**")
-                                                st.code(exit_result['filepath'], language=None)
-                                                
-                                                with st.expander("📄 Exit Order Details"):
-                                                    st.text(format_order_summary(exit_order))
-                                                    st.json(exit_order)
-                                                
-                                                # Preview and download buttons
-                                                col_preview_exit, col_dl_exit = st.columns(2)
-                                                
-                                                with col_preview_exit:
-                                                    if st.button("🔍 Preview", key="preview_exit", use_container_width=True):
-                                                        try:
-                                                            from providers.schwab_trading import SchwabTrader
-                                                            from providers.schwab import SchwabClient
-                                                            
-                                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                                if schwab_client:
-                                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                                    with st.spinner("Previewing exit order..."):
-                                                                        preview_result = trader.preview_order(exit_order)
-                                                                    
-                                                                    if preview_result['status'] == 'preview_success':
-                                                                        st.success("✅ Exit order preview received!")
-                                                                        with st.expander("📊 Preview Details", expanded=True):
-                                                                            preview_data = preview_result['preview']
-                                                                            if isinstance(preview_data, dict):
-                                                                                if 'commission' in preview_data:
-                                                                                    st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                                                                if 'estimatedTotalAmount' in preview_data:
-                                                                                    st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                                                                if 'buyingPowerEffect' in preview_data:
-                                                                                    st.metric("Buying Power Effect", f"${preview_data['buyingPowerEffect']:.2f}")
-                                                                                st.json(preview_data)
-                                                                            else:
-                                                                                st.json(preview_data)
-                                                                    else:
-                                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
-                                                                else:
-                                                                    st.error("Schwab client not available")
-                                                            else:
-                                                                st.error("Schwab provider not active")
-                                                        except Exception as e:
-                                                            st.error(f"Error: {str(e)}")
-                                                
-                                                with col_dl_exit:
-                                                    with open(exit_result['filepath'], 'r') as f:
-                                                        exit_json = f.read()
-                                                    
-                                                    st.download_button(
-                                                        label="⬇️ Download",
-                                                        data=exit_json,
-                                                        file_name=exit_result['filepath'].split('/')[-1],
-                                                        mime="application/json",
-                                                        key="download_exit",
-                                                        use_container_width=True
-                                                    )
-                                        else:
-                                            st.info("No exit order generated")
-                                    
-                                    # Stop-loss column
-                                    if col_stop and stop_loss_result:
-                                        with col_stop:
-                                            st.write(f"**🛑 STOP-LOSS Order ({risk_multiplier}x loss limit)**")
-                                            
-                                            if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
-                                                # Collar stop-loss
-                                                st.code(stop_loss_result['filepath'], language=None)
-                                            else:
-                                                st.code(stop_loss_result['filepath'], language=None)
-                                            
-                                            with st.expander("📄 Stop-Loss Details"):
-                                                if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
-                                                    st.json(stop_loss_order_call)
-                                                else:
-                                                    st.json(stop_loss_order)
-                                            
-                                            # Preview and download buttons
-                                            col_preview_stop, col_dl_stop = st.columns(2)
-                                            
-                                            with col_preview_stop:
-                                                if st.button("🔍 Preview", key="preview_stop_loss", use_container_width=True):
-                                                    try:
-                                                        from providers.schwab_trading import SchwabTrader
-                                                        from providers.schwab import SchwabClient
-                                                        
-                                                        # Select the correct order to preview
-                                                        order_to_preview = stop_loss_order_call if (isinstance(stop_loss_result, dict) and 'call' in stop_loss_result) else stop_loss_order
-                                                        
-                                                        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                            schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                            if schwab_client:
-                                                                trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                                with st.spinner("Previewing stop-loss order..."):
-                                                                    preview_result = trader.preview_order(order_to_preview)
-                                                                
-                                                                if preview_result['status'] == 'preview_success':
-                                                                    st.success("✅ Stop-loss preview received!")
-                                                                    with st.expander("📊 Preview Details", expanded=True):
-                                                                        preview_data = preview_result['preview']
-                                                                        if isinstance(preview_data, dict):
-                                                                            if 'commission' in preview_data:
-                                                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                                                            if 'estimatedTotalAmount' in preview_data:
-                                                                                st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                                                            if 'buyingPowerEffect' in preview_data:
-                                                                                st.metric("Buying Power Effect", f"${preview_data['buyingPowerEffect']:.2f}")
-                                                                            if 'marginRequirement' in preview_data:
-                                                                                st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
-                                                                            st.json(preview_data)
-                                                                        else:
-                                                                            st.json(preview_data)
-                                                                else:
-                                                                    st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
-                                                            else:
-                                                                st.error("Schwab client not available")
-                                                        else:
-                                                            st.error("Schwab provider not active")
-                                                    except Exception as e:
-                                                        st.error(f"Error: {str(e)}")
-                                            
-                                            with col_dl_stop:
-                                                filepath = stop_loss_result['filepath'] if not isinstance(stop_loss_result, dict) or 'call' not in stop_loss_result else stop_loss_result['filepath']
-                                                with open(filepath, 'r') as f:
-                                                    stop_loss_json = f.read()
-                                                
-                                                st.download_button(
-                                                    label="⬇️ Download",
-                                                    data=stop_loss_json,
-                                                    file_name=filepath.split('/')[-1],
-                                                    mime="application/json",
-                                                    key="download_stop_loss",
-                                                    use_container_width=True
-                                                )
-                                    
-                                    # Instructions
-                                    st.divider()
-                                    if generate_stop_loss:
-                                        st.info("""
-                                        **📋 "Set and Forget" with Risk Management:**
-                                        
-                                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
-                                        2. **Wait for fill confirmation** before proceeding
-                                        3. **Submit BOTH exit orders immediately after fill:**
-                                           - ✅ Profit-taking exit (captures gains at target)
-                                           - 🛑 Stop-loss exit (limits losses if trade goes against you)
-                                        4. **Use GTC duration** for both exit orders
-                                        5. **Let the market work** - whichever hits first will execute automatically
-                                        6. **Cancel the other order** once one fills (or let Schwab OCO if supported)
-                                        
-                                        💡 **Risk Management:** Stop-loss triggers at 2x max profit loss per runbook best practices.
-                                        """)
-                                    else:
-                                        st.info("""
-                                        **📋 "Set and Forget" Instructions:**
-                                        
-                                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
-                                        2. **Wait for fill confirmation** before proceeding
-                                        3. **Submit EXIT order immediately after fill** with GTC duration
-                                        4. **Monitor position** - exit order will automatically execute at profit target
-                                        5. **Set calendar reminder** at 7-10 DTE to review if not yet closed
-                                        
-                                        💡 **Pro Tip:** Use GTC (Good Till Canceled) duration for exit orders so they remain active until filled or you cancel them.
-                                        """)
                                 else:
                                     st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
                         
@@ -4849,6 +4532,407 @@ with tabs[4]:
                             import traceback
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
+                
+                # Display generated orders if they exist in session state
+                if st.session_state.generated_orders is not None:
+                    from providers.schwab_trading import format_order_summary
+                    
+                    orders_data = st.session_state.generated_orders
+                    order = orders_data['entry_order']
+                    result = orders_data['entry_result']
+                    exit_order = orders_data['exit_order']
+                    exit_result = orders_data['exit_result']
+                    stop_loss_order = orders_data['stop_loss_order']
+                    stop_loss_result = orders_data['stop_loss_result']
+                    generate_stop_loss = orders_data['generate_stop_loss']
+                    profit_capture_pct = orders_data['profit_capture_pct']
+                    risk_multiplier = orders_data['risk_multiplier']
+                    selected_strategy = orders_data['selected_strategy']
+                    
+                    # Collar-specific orders
+                    exit_order_call = orders_data.get('exit_order_call')
+                    exit_order_put = orders_data.get('exit_order_put')
+                    stop_loss_order_call = orders_data.get('stop_loss_order_call')
+                    
+                    st.divider()
+                    st.subheader("📋 Generated Orders")
+                    
+                    # Create columns based on whether stop-loss is included
+                    if generate_stop_loss:
+                        col_entry, col_exit, col_stop = st.columns(3)
+                    else:
+                        col_entry, col_exit = st.columns(2)
+                        col_stop = None
+                    
+                    with col_entry:
+                        st.write("**📤 ENTRY Order**")
+                        st.code(result['filepath'], language=None)
+                        
+                        # Show order summary
+                        with st.expander("📄 Entry Order Details"):
+                            st.text(format_order_summary(order))
+                            st.json(order)
+                        
+                        # Check for preview result in session state
+                        if 'preview_entry' in st.session_state.preview_results:
+                            preview_result = st.session_state.preview_results['preview_entry']
+                            st.success("✅ Entry order preview received!")
+                            with st.expander("📊 Preview Details", expanded=True):
+                                preview_data = preview_result['preview']
+                                if isinstance(preview_data, dict):
+                                    if 'commission' in preview_data:
+                                        st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                    if 'estimatedTotalAmount' in preview_data:
+                                        st.metric("Estimated Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                    if 'buyingPowerEffect' in preview_data:
+                                        st.metric("Buying Power Impact", f"${preview_data['buyingPowerEffect']:.2f}")
+                                    if 'marginRequirement' in preview_data:
+                                        st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
+                                    st.json(preview_data)
+                                else:
+                                    st.json(preview_data)
+                        
+                        # Preview and download buttons
+                        col_preview_entry, col_dl_entry = st.columns(2)
+                        
+                        with col_preview_entry:
+                            if st.button("🔍 Preview", key="preview_entry_btn", use_container_width=True):
+                                try:
+                                    from providers.schwab_trading import SchwabTrader
+                                    from providers.schwab import SchwabClient
+                                    
+                                    if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                        schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                        if schwab_client:
+                                            trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                            with st.spinner("Previewing entry order..."):
+                                                preview_result = trader.preview_order(order)
+                                            
+                                            if preview_result['status'] == 'preview_success':
+                                                st.session_state.preview_results['preview_entry'] = preview_result
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
+                                        else:
+                                            st.error("Schwab client not available")
+                                    else:
+                                        st.error("Schwab provider not active")
+                                except Exception as e:
+                                    st.error(f"Error: {str(e)}")
+                        
+                        with col_dl_entry:
+                            with open(result['filepath'], 'r') as f:
+                                order_json = f.read()
+                            
+                            st.download_button(
+                                label="⬇️ Download",
+                                data=order_json,
+                                file_name=result['filepath'].split('/')[-1],
+                                mime="application/json",
+                                key="download_entry_btn",
+                                use_container_width=True
+                            )
+                    
+                    with col_exit:
+                        if exit_result:
+                            if isinstance(exit_result, dict) and 'call' in exit_result:
+                                # Collar has multiple exit orders
+                                st.write("**📥 EXIT Orders (Collar)**")
+                                st.code(exit_result['call']['filepath'], language=None)
+                                st.code(exit_result['put']['filepath'], language=None)
+                                
+                                with st.expander("📄 Exit Orders Details"):
+                                    st.write("**Call Exit:**")
+                                    st.json(exit_order_call)
+                                    st.write("**Put Exit:**")
+                                    st.json(exit_order_put)
+                                
+                                # Preview results for call
+                                if 'preview_exit_call' in st.session_state.preview_results:
+                                    preview_result = st.session_state.preview_results['preview_exit_call']
+                                    st.success("✅ Call exit preview received!")
+                                    with st.expander("📊 Call Preview", expanded=True):
+                                        preview_data = preview_result['preview']
+                                        if isinstance(preview_data, dict):
+                                            if 'commission' in preview_data:
+                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                            if 'estimatedTotalAmount' in preview_data:
+                                                st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                            st.json(preview_data)
+                                        else:
+                                            st.json(preview_data)
+                                
+                                # Preview and download for call exit
+                                col_preview_call, col_dl_call = st.columns(2)
+                                with col_preview_call:
+                                    if st.button("🔍 Preview Call", key="preview_exit_call_btn", use_container_width=True):
+                                        try:
+                                            from providers.schwab_trading import SchwabTrader
+                                            from providers.schwab import SchwabClient
+                                            
+                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                                if schwab_client:
+                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                    with st.spinner("Previewing call exit..."):
+                                                        preview_result = trader.preview_order(exit_order_call)
+                                                    
+                                                    if preview_result['status'] == 'preview_success':
+                                                        st.session_state.preview_results['preview_exit_call'] = preview_result
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
+                                                else:
+                                                    st.error("Schwab client not available")
+                                            else:
+                                                st.error("Schwab provider not active")
+                                        except Exception as e:
+                                            st.error(f"Error: {str(e)}")
+                                
+                                with col_dl_call:
+                                    with open(exit_result['call']['filepath'], 'r') as f:
+                                        exit_call_json = f.read()
+                                    st.download_button(
+                                        label="⬇️ Download",
+                                        data=exit_call_json,
+                                        file_name=exit_result['call']['filepath'].split('/')[-1],
+                                        mime="application/json",
+                                        key="download_exit_call_btn",
+                                        use_container_width=True
+                                    )
+                                
+                                # Preview results for put
+                                if 'preview_exit_put' in st.session_state.preview_results:
+                                    preview_result = st.session_state.preview_results['preview_exit_put']
+                                    st.success("✅ Put exit preview received!")
+                                    with st.expander("📊 Put Preview", expanded=True):
+                                        preview_data = preview_result['preview']
+                                        if isinstance(preview_data, dict):
+                                            if 'commission' in preview_data:
+                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                            if 'estimatedTotalAmount' in preview_data:
+                                                st.metric("Est. Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                            st.json(preview_data)
+                                        else:
+                                            st.json(preview_data)
+                                
+                                # Preview and download for put exit
+                                col_preview_put, col_dl_put = st.columns(2)
+                                with col_preview_put:
+                                    if st.button("🔍 Preview Put", key="preview_exit_put_btn", use_container_width=True):
+                                        try:
+                                            from providers.schwab_trading import SchwabTrader
+                                            from providers.schwab import SchwabClient
+                                            
+                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                                if schwab_client:
+                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                    with st.spinner("Previewing put exit..."):
+                                                        preview_result = trader.preview_order(exit_order_put)
+                                                    
+                                                    if preview_result['status'] == 'preview_success':
+                                                        st.session_state.preview_results['preview_exit_put'] = preview_result
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
+                                                else:
+                                                    st.error("Schwab client not available")
+                                            else:
+                                                st.error("Schwab provider not active")
+                                        except Exception as e:
+                                            st.error(f"Error: {str(e)}")
+                                
+                                with col_dl_put:
+                                    with open(exit_result['put']['filepath'], 'r') as f:
+                                        exit_put_json = f.read()
+                                    st.download_button(
+                                        label="⬇️ Download",
+                                        data=exit_put_json,
+                                        file_name=exit_result['put']['filepath'].split('/')[-1],
+                                        mime="application/json",
+                                        key="download_exit_put_btn",
+                                        use_container_width=True
+                                    )
+                            else:
+                                # Single exit order
+                                st.write(f"**📥 EXIT Order ({profit_capture_pct}% profit target)**")
+                                st.code(exit_result['filepath'], language=None)
+                                
+                                with st.expander("📄 Exit Order Details"):
+                                    st.text(format_order_summary(exit_order))
+                                    st.json(exit_order)
+                                
+                                # Check for preview result
+                                if 'preview_exit' in st.session_state.preview_results:
+                                    preview_result = st.session_state.preview_results['preview_exit']
+                                    st.success("✅ Exit order preview received!")
+                                    with st.expander("📊 Preview Details", expanded=True):
+                                        preview_data = preview_result['preview']
+                                        if isinstance(preview_data, dict):
+                                            if 'commission' in preview_data:
+                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                            if 'estimatedTotalAmount' in preview_data:
+                                                st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                            if 'buyingPowerEffect' in preview_data:
+                                                st.metric("Buying Power Effect", f"${preview_data['buyingPowerEffect']:.2f}")
+                                            st.json(preview_data)
+                                        else:
+                                            st.json(preview_data)
+                                
+                                # Preview and download buttons
+                                col_preview_exit, col_dl_exit = st.columns(2)
+                                
+                                with col_preview_exit:
+                                    if st.button("🔍 Preview", key="preview_exit_btn", use_container_width=True):
+                                        try:
+                                            from providers.schwab_trading import SchwabTrader
+                                            from providers.schwab import SchwabClient
+                                            
+                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                                if schwab_client:
+                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                    with st.spinner("Previewing exit order..."):
+                                                        preview_result = trader.preview_order(exit_order)
+                                                    
+                                                    if preview_result['status'] == 'preview_success':
+                                                        st.session_state.preview_results['preview_exit'] = preview_result
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
+                                                else:
+                                                    st.error("Schwab client not available")
+                                            else:
+                                                st.error("Schwab provider not active")
+                                        except Exception as e:
+                                            st.error(f"Error: {str(e)}")
+                                
+                                with col_dl_exit:
+                                    with open(exit_result['filepath'], 'r') as f:
+                                        exit_json = f.read()
+                                    
+                                    st.download_button(
+                                        label="⬇️ Download",
+                                        data=exit_json,
+                                        file_name=exit_result['filepath'].split('/')[-1],
+                                        mime="application/json",
+                                        key="download_exit_btn",
+                                        use_container_width=True
+                                    )
+                        else:
+                            st.info("No exit order generated")
+                    
+                    # Stop-loss column
+                    if col_stop and stop_loss_result:
+                        with col_stop:
+                            st.write(f"**🛑 STOP-LOSS Order ({risk_multiplier}x loss limit)**")
+                            
+                            if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
+                                # Collar stop-loss
+                                st.code(stop_loss_result['filepath'], language=None)
+                            else:
+                                st.code(stop_loss_result['filepath'], language=None)
+                            
+                            with st.expander("📄 Stop-Loss Details"):
+                                if isinstance(stop_loss_result, dict) and 'call' in stop_loss_result:
+                                    st.json(stop_loss_order_call)
+                                else:
+                                    st.json(stop_loss_order)
+                            
+                            # Check for preview result
+                            if 'preview_stop_loss' in st.session_state.preview_results:
+                                preview_result = st.session_state.preview_results['preview_stop_loss']
+                                st.success("✅ Stop-loss preview received!")
+                                with st.expander("📊 Preview Details", expanded=True):
+                                    preview_data = preview_result['preview']
+                                    if isinstance(preview_data, dict):
+                                        if 'commission' in preview_data:
+                                            st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                        if 'estimatedTotalAmount' in preview_data:
+                                            st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                        if 'buyingPowerEffect' in preview_data:
+                                            st.metric("Buying Power Effect", f"${preview_data['buyingPowerEffect']:.2f}")
+                                        if 'marginRequirement' in preview_data:
+                                            st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
+                                        st.json(preview_data)
+                                    else:
+                                        st.json(preview_data)
+                            
+                            # Preview and download buttons
+                            col_preview_stop, col_dl_stop = st.columns(2)
+                            
+                            with col_preview_stop:
+                                if st.button("🔍 Preview", key="preview_stop_loss_btn", use_container_width=True):
+                                    try:
+                                        from providers.schwab_trading import SchwabTrader
+                                        from providers.schwab import SchwabClient
+                                        
+                                        # Select the correct order to preview
+                                        order_to_preview = stop_loss_order_call if (isinstance(stop_loss_result, dict) and 'call' in stop_loss_result) else stop_loss_order
+                                        
+                                        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                                            schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                                            if schwab_client:
+                                                trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                with st.spinner("Previewing stop-loss order..."):
+                                                    preview_result = trader.preview_order(order_to_preview)
+                                                
+                                                if preview_result['status'] == 'preview_success':
+                                                    st.session_state.preview_results['preview_stop_loss'] = preview_result
+                                                    st.rerun()
+                                                else:
+                                                    st.error(f"Preview failed: {preview_result.get('message', 'Unknown error')}")
+                                            else:
+                                                st.error("Schwab client not available")
+                                        else:
+                                            st.error("Schwab provider not active")
+                                    except Exception as e:
+                                        st.error(f"Error: {str(e)}")
+                            
+                            with col_dl_stop:
+                                filepath = stop_loss_result['filepath'] if not isinstance(stop_loss_result, dict) or 'call' not in stop_loss_result else stop_loss_result['filepath']
+                                with open(filepath, 'r') as f:
+                                    stop_loss_json = f.read()
+                                
+                                st.download_button(
+                                    label="⬇️ Download",
+                                    data=stop_loss_json,
+                                    file_name=filepath.split('/')[-1],
+                                    mime="application/json",
+                                    key="download_stop_loss_btn",
+                                    use_container_width=True
+                                )
+                    
+                    # Instructions
+                    st.divider()
+                    if generate_stop_loss:
+                        st.info("""
+                        **📋 "Set and Forget" with Risk Management:**
+                        
+                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
+                        2. **Wait for fill confirmation** before proceeding
+                        3. **Submit BOTH exit orders immediately after fill:**
+                           - ✅ Profit-taking exit (captures gains at target)
+                           - 🛑 Stop-loss exit (limits losses if trade goes against you)
+                        4. **Use GTC duration** for both exit orders
+                        5. **Let the market work** - whichever hits first will execute automatically
+                        6. **Cancel the other order** once one fills (or let Schwab OCO if supported)
+                        
+                        💡 **Risk Management:** Stop-loss triggers at 2x max profit loss per runbook best practices.
+                        """)
+                    else:
+                        st.info("""
+                        **📋 "Set and Forget" Instructions:**
+                        
+                        1. **Submit ENTRY order first** via Schwab (web/mobile/thinkorswim)
+                        2. **Wait for fill confirmation** before proceeding
+                        3. **Submit EXIT order immediately after fill** with GTC duration
+                        4. **Monitor position** - exit order will automatically execute at profit target
+                        5. **Set calendar reminder** at 7-10 DTE to review if not yet closed
+                        
+                        💡 **Pro Tip:** Use GTC (Good Till Canceled) duration for exit orders so they remain active until filled or you cancel them.
+                        """)
             else:
                 st.info("No contracts available. Run a scan first.")
 
