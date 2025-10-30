@@ -3528,39 +3528,108 @@ with tabs[4]:
             st.divider()
             st.subheader("📝 Step 2: Create Order")
             
-            st.info("📋 **Currently supports Cash-Secured Puts only**. Support for Covered Calls, Collars, and Iron Condors coming soon.")
+            # Strategy selection for Trade Execution
+            st.write("**Select Strategy:**")
+            col_strat, col_info = st.columns([2, 3])
+            
+            with col_strat:
+                available_strategies = []
+                if not df_csp.empty:
+                    available_strategies.append("Cash-Secured Put")
+                if not df_cc.empty:
+                    available_strategies.append("Covered Call")
+                if not df_collar.empty:
+                    available_strategies.append("Collar")
+                if not df_iron_condor.empty:
+                    available_strategies.append("Iron Condor")
+                
+                if not available_strategies:
+                    st.warning("⚠️ No scan results available. Run a scan first.")
+                    selected_strategy = None
+                else:
+                    strategy_map = {
+                        "Cash-Secured Put": ("CSP", df_csp),
+                        "Covered Call": ("CC", df_cc),
+                        "Collar": ("COLLAR", df_collar),
+                        "Iron Condor": ("IRON_CONDOR", df_iron_condor)
+                    }
+                    
+                    selected_strategy_name = st.selectbox(
+                        "Strategy Type:",
+                        available_strategies,
+                        help="Select the strategy type to trade"
+                    )
+                    
+                    selected_strategy = strategy_map[selected_strategy_name][0]
+                    strategy_df = strategy_map[selected_strategy_name][1]
+            
+            with col_info:
+                if selected_strategy == "CSP":
+                    st.info("💡 **CSP**: Sell put option, collect premium, prepared to buy stock at strike")
+                elif selected_strategy == "CC":
+                    st.info("💡 **CC**: Sell call option on owned stock, collect premium, capped upside")
+                elif selected_strategy == "COLLAR":
+                    st.info("💡 **Collar**: Sell call + buy put for downside protection, limited upside")
+                elif selected_strategy == "IRON_CONDOR":
+                    st.info("💡 **Iron Condor**: Sell put spread + call spread, profit if price stays in range")
             
             # Select a contract from the results
-            if not df_csp.empty:
+            if selected_strategy and not strategy_df.empty:
                 col1, col2 = st.columns([3, 1])
                 
                 with col1:
                     # Create selection options from scan results
-                    df_csp_display = df_csp.copy()
-                    df_csp_display['display'] = (
-                        df_csp_display['Ticker'] + " " +
-                        df_csp_display['Exp'] + " $" +
-                        df_csp_display['Strike'].astype(str) + " PUT @ $" +
-                        df_csp_display['Premium'].round(2).astype(str)
-                    )
+                    df_display = strategy_df.copy()
+                    
+                    # Build display string based on strategy type
+                    if selected_strategy == "CSP":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] + " $" +
+                            df_display['Strike'].astype(str) + " PUT @ $" +
+                            df_display['Premium'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "CC":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] + " $" +
+                            df_display['Strike'].astype(str) + " CALL @ $" +
+                            df_display['Premium'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "COLLAR":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " CALL $" + df_display['CallStrike'].astype(str) +
+                            " / PUT $" + df_display['PutStrike'].astype(str) +
+                            " @ $" + df_display['NetCredit'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "IRON_CONDOR":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " P: $" + df_display['LongPut'].astype(str) + "/" +
+                            df_display['ShortPut'].astype(str) +
+                            " C: $" + df_display['ShortCall'].astype(str) + "/" +
+                            df_display['LongCall'].astype(str) +
+                            " @ $" + df_display['NetCredit'].round(2).astype(str)
+                        )
                     
                     selected_idx = st.selectbox(
                         "Select contract to trade:",
-                        options=range(len(df_csp_display)),
-                        format_func=lambda i: df_csp_display.iloc[i]['display']
+                        options=range(len(df_display)),
+                        format_func=lambda i: df_display.iloc[i]['display']
                     )
                     
                     if selected_idx is not None:
-                        selected = df_csp[df_csp.index == df_csp_display.index[selected_idx]].iloc[0]
+                        selected = strategy_df[strategy_df.index == df_display.index[selected_idx]].iloc[0]
                         
                         # Re-fetch earnings date with Alpha Vantage enabled for accurate data
-                        # (During screening, only Yahoo is used to preserve API quota)
                         try:
                             import yfinance as yf
                             stock = yf.Ticker(selected['Ticker'])
                             fresh_earnings = get_earnings_date(stock, use_alpha_vantage=True)
                             if fresh_earnings:
-                                # Update the days to earnings with fresh data
                                 fresh_days = (fresh_earnings - datetime.now(timezone.utc).date()).days
                                 selected['DaysToEarnings'] = fresh_days
                                 st.caption(f"✓ Earnings data refreshed with Alpha Vantage fallback")
@@ -3571,9 +3640,29 @@ with tabs[4]:
                         st.write("**Selected Contract:**")
                         cols_info = st.columns(4)
                         cols_info[0].metric("Ticker", selected['Ticker'])
-                        cols_info[1].metric("Strike", f"${selected['Strike']:.2f}")
-                        cols_info[2].metric("Premium", f"${selected['Premium']:.2f}")
-                        cols_info[3].metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                        
+                        if selected_strategy == "CSP":
+                            cols_info[1].metric("Strike", f"${selected['Strike']:.2f}")
+                            cols_info[2].metric("Premium", f"${selected['Premium']:.2f}")
+                            cols_info[3].metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                        elif selected_strategy == "CC":
+                            cols_info[1].metric("Strike", f"${selected['Strike']:.2f}")
+                            cols_info[2].metric("Premium", f"${selected['Premium']:.2f}")
+                            cols_info[3].metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                        elif selected_strategy == "COLLAR":
+                            cols_info[1].metric("Call Strike", f"${selected['CallStrike']:.2f}")
+                            cols_info[2].metric("Put Strike", f"${selected['PutStrike']:.2f}")
+                            cols_info[3].metric("Net Credit", f"${selected['NetCredit']:.2f}")
+                        elif selected_strategy == "IRON_CONDOR":
+                            st.write("**Put Spread:**")
+                            col_p1, col_p2 = st.columns(2)
+                            col_p1.metric("Long Put", f"${selected['LongPut']:.2f}")
+                            col_p2.metric("Short Put", f"${selected['ShortPut']:.2f}")
+                            st.write("**Call Spread:**")
+                            col_c1, col_c2 = st.columns(2)
+                            col_c1.metric("Short Call", f"${selected['ShortCall']:.2f}")
+                            col_c2.metric("Long Call", f"${selected['LongCall']:.2f}")
+                            st.metric("Net Credit", f"${selected['NetCredit']:.2f}")
                 
                 with col2:
                     st.write("**Order Settings:**")
@@ -3593,23 +3682,53 @@ with tabs[4]:
                         help="DAY = good for today, GTC = good till canceled"
                     )
                     
-                    # Use mid price as default limit
-                    limit_price = st.number_input(
-                        "Limit Price",
-                        min_value=0.01,
-                        value=float(selected['Premium']),
-                        step=0.01,
-                        format="%.2f",
-                        help="Maximum price you're willing to receive"
-                    )
+                    # Use appropriate price field based on strategy
+                    if selected_strategy in ["CSP", "CC"]:
+                        limit_price = st.number_input(
+                            "Limit Price",
+                            min_value=0.01,
+                            value=float(selected['Premium']),
+                            step=0.01,
+                            format="%.2f",
+                            help="Maximum price you're willing to receive"
+                        )
+                    elif selected_strategy in ["COLLAR", "IRON_CONDOR"]:
+                        limit_price = st.number_input(
+                            "Limit Price (Net Credit)",
+                            min_value=0.01,
+                            value=float(selected['NetCredit']),
+                            step=0.01,
+                            format="%.2f",
+                            help="Minimum net credit you're willing to receive"
+                        )
                 
                 # Order preview
                 st.divider()
                 st.write("**Order Preview:**")
-                col_a, col_b, col_c = st.columns(3)
-                col_a.write(f"**Action:** SELL TO OPEN (Cash-Secured Put)")
-                col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
-                col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
+                
+                if selected_strategy == "CSP":
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.write(f"**Action:** SELL TO OPEN (Cash-Secured Put)")
+                    col_b.write(f"**Collateral Required:** ${selected['Strike'] * 100 * num_contracts:,.2f}")
+                    col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "CC":
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.write(f"**Action:** SELL TO OPEN (Covered Call)")
+                    col_b.write(f"**Stock Required:** {100 * num_contracts} shares")
+                    col_c.write(f"**Max Premium:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "COLLAR":
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.write(f"**Action:** SELL CALL + BUY PUT")
+                    col_b.write(f"**Stock Required:** {100 * num_contracts} shares")
+                    col_c.write(f"**Net Credit:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "IRON_CONDOR":
+                    col_a, col_b = st.columns(2)
+                    col_a.write(f"**Action:** 4-LEG CREDIT SPREAD")
+                    put_width = selected['ShortPut'] - selected['LongPut']
+                    call_width = selected['LongCall'] - selected['ShortCall']
+                    max_width = max(put_width, call_width)
+                    col_b.write(f"**Max Risk:** ${(max_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
+                    st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
                 
                 # Earnings Safety Check
                 days_to_earnings = selected.get('DaysToEarnings', None)
@@ -3661,8 +3780,19 @@ with tabs[4]:
                                 if schwab_client:
                                     trader = SchwabTrader(dry_run=False, client=schwab_client)
                                     
-                                    # Calculate required buying power
-                                    required = selected['Strike'] * 100 * num_contracts
+                                    # Calculate required buying power based on strategy
+                                    if selected_strategy == "CSP":
+                                        required = selected['Strike'] * 100 * num_contracts
+                                    elif selected_strategy == "CC":
+                                        required = 0  # No cash required, just need stock ownership
+                                    elif selected_strategy == "COLLAR":
+                                        # Cost of protective put minus call premium
+                                        required = max(0, (selected.get('PutPremium', 0) - selected.get('CallPremium', 0)) * 100 * num_contracts)
+                                    elif selected_strategy == "IRON_CONDOR":
+                                        put_width = selected['ShortPut'] - selected['LongPut']
+                                        call_width = selected['LongCall'] - selected['ShortCall']
+                                        max_width = max(put_width, call_width)
+                                        required = (max_width - selected['NetCredit']) * 100 * num_contracts
                                     
                                     with st.spinner("Checking account..."):
                                         result = trader.check_buying_power(required)
@@ -3713,15 +3843,47 @@ with tabs[4]:
                                     # Initialize trader (NOT dry-run, we want to call API)
                                     trader = SchwabTrader(dry_run=False, client=schwab_client)
                                     
-                                    # Create order
-                                    order = trader.create_cash_secured_put_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        strike=float(selected['Strike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=float(limit_price),
-                                        duration=order_duration
-                                    )
+                                    # Create order based on strategy
+                                    if selected_strategy == "CSP":
+                                        order = trader.create_cash_secured_put_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "CC":
+                                        order = trader.create_covered_call_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "COLLAR":
+                                        order = trader.create_collar_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            call_strike=float(selected['CallStrike']),
+                                            put_strike=float(selected['PutStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "IRON_CONDOR":
+                                        order = trader.create_iron_condor_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            long_put_strike=float(selected['LongPut']),
+                                            short_put_strike=float(selected['ShortPut']),
+                                            short_call_strike=float(selected['ShortCall']),
+                                            long_call_strike=float(selected['LongCall']),
+                                            quantity=int(num_contracts),
+                                            limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
                                     
                                     # Validate order first
                                     validation = trader.validate_order(order)
@@ -3803,15 +3965,51 @@ with tabs[4]:
                             # Initialize trader in dry-run mode
                             trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
                             
-                            # Create order
-                            order = trader.create_cash_secured_put_order(
-                                symbol=selected['Ticker'],
-                                expiration=selected['Exp'],
-                                strike=float(selected['Strike']),
-                                quantity=int(num_contracts),
-                                limit_price=float(limit_price),
-                                duration=order_duration
-                            )
+                            # Create order based on strategy
+                            if selected_strategy == "CSP":
+                                order = trader.create_cash_secured_put_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    strike=float(selected['Strike']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "csp"
+                            elif selected_strategy == "CC":
+                                order = trader.create_covered_call_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    strike=float(selected['Strike']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "covered_call"
+                            elif selected_strategy == "COLLAR":
+                                order = trader.create_collar_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    call_strike=float(selected['CallStrike']),
+                                    put_strike=float(selected['PutStrike']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "collar"
+                            elif selected_strategy == "IRON_CONDOR":
+                                order = trader.create_iron_condor_order(
+                                    symbol=selected['Ticker'],
+                                    expiration=selected['Exp'],
+                                    long_put_strike=float(selected['LongPut']),
+                                    short_put_strike=float(selected['ShortPut']),
+                                    short_call_strike=float(selected['ShortCall']),
+                                    long_call_strike=float(selected['LongCall']),
+                                    quantity=int(num_contracts),
+                                    limit_price=float(limit_price),
+                                    duration=order_duration
+                                )
+                                strategy_type = "iron_condor"
                             
                             # Validate order
                             validation = trader.validate_order(order)
@@ -3829,18 +4027,20 @@ with tabs[4]:
                                 # Submit order (exports to file)
                                 metadata = {
                                     "scanner_data": {
-                                        "otm_percent": float(selected.get('OTM%', 0)),
-                                        "roi_annual": float(selected.get('ROI%_ann', 0)),
-                                        "iv": float(selected.get('IV', 0)),
-                                        "delta": float(selected.get('Δ', 0)),
-                                        "theta": float(selected.get('Θ', 0)),
-                                        "open_interest": int(selected.get('OI', 0)),
-                                        "days_to_exp": int(selected.get('Days', 0))
+                                        "strategy": selected_strategy,
+                                        "otm_percent": float(selected.get('OTM%', 0)) if 'OTM%' in selected else None,
+                                        "roi_annual": float(selected.get('ROI%_ann', 0)) if 'ROI%_ann' in selected else None,
+                                        "iv": float(selected.get('IV', 0)) if 'IV' in selected else None,
+                                        "delta": float(selected.get('Δ', 0)) if 'Δ' in selected else None,
+                                        "theta": float(selected.get('Θ', 0)) if 'Θ' in selected else None,
+                                        "open_interest": int(selected.get('OI', 0)) if 'OI' in selected else None,
+                                        "days_to_exp": int(selected.get('Days', 0)) if 'Days' in selected else None,
+                                        "net_credit": float(selected.get('NetCredit', 0)) if 'NetCredit' in selected else None
                                     },
-                                    "source": "strategy_lab_csp_scanner"
+                                    "source": f"strategy_lab_{strategy_type}_scanner"
                                 }
                                 
-                                result = trader.submit_order(order, strategy_type="csp", metadata=metadata)
+                                result = trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
                                 
                                 if result['status'] == 'exported':
                                     st.success(f"✅ Order exported successfully!")

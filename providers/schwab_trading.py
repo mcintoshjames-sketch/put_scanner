@@ -435,6 +435,156 @@ class SchwabTrader:
             duration=duration
         )
     
+    def create_collar_order(
+        self,
+        symbol: str,
+        expiration: str,
+        call_strike: float,
+        put_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a collar order (sell call + buy put for downside protection).
+        This is a 2-leg order: SELL call, BUY put.
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            call_strike: Strike price for short call
+            put_strike: Strike price for long put
+            quantity: Number of contracts
+            limit_price: Net credit/debit limit (negative = debit, positive = credit)
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols
+        call_symbol = f"{symbol_padded}{exp_str}C{int(call_strike * 1000):08d}"
+        put_symbol = f"{symbol_padded}{exp_str}P{int(put_strike * 1000):08d}"
+        
+        # Build multi-leg order
+        order = {
+            "orderType": "NET_CREDIT" if limit_price >= 0 else "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": abs(limit_price),
+            "orderLegCollection": [
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": put_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
+    def create_iron_condor_order(
+        self,
+        symbol: str,
+        expiration: str,
+        long_put_strike: float,
+        short_put_strike: float,
+        short_call_strike: float,
+        long_call_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create an iron condor order (4-leg credit spread).
+        This is a 4-leg order: BUY lower put, SELL higher put, SELL lower call, BUY higher call.
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            long_put_strike: Strike for long (buy) put (lowest strike)
+            short_put_strike: Strike for short (sell) put
+            short_call_strike: Strike for short (sell) call
+            long_call_strike: Strike for long (buy) call (highest strike)
+            quantity: Number of contracts
+            limit_price: Net credit limit (should be positive)
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols for all 4 legs
+        long_put_symbol = f"{symbol_padded}{exp_str}P{int(long_put_strike * 1000):08d}"
+        short_put_symbol = f"{symbol_padded}{exp_str}P{int(short_put_strike * 1000):08d}"
+        short_call_symbol = f"{symbol_padded}{exp_str}C{int(short_call_strike * 1000):08d}"
+        long_call_symbol = f"{symbol_padded}{exp_str}C{int(long_call_strike * 1000):08d}"
+        
+        # Build 4-leg order
+        order = {
+            "orderType": "NET_CREDIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": limit_price,
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": long_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": short_put_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": short_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": long_call_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
     def export_order(
         self,
         order: Dict[str, Any],
