@@ -4,7 +4,8 @@
 from __future__ import annotations
 import json
 import os
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Literal, List
 from pathlib import Path
 
@@ -36,6 +37,95 @@ class SchwabTrader:
         self.export_dir = Path(export_dir or "./trade_orders")
         self.export_dir.mkdir(exist_ok=True)
         self.client = client
+        
+        # Safety mechanism: Track previewed orders
+        # Orders must be previewed before execution
+        self._preview_cache = {}  # order_hash -> preview_timestamp
+        self._preview_expiry_minutes = 30  # Previews expire after 30 minutes
+    
+    def _compute_order_hash(self, order: Dict[str, Any]) -> str:
+        """
+        Compute a unique hash for an order to track it through preview->execution.
+        
+        Args:
+            order: Order payload dictionary
+            
+        Returns:
+            SHA256 hash of the order (first 16 characters)
+        """
+        # Create a canonical string representation of the order
+        # Focus on key fields that identify the order
+        order_key = {
+            'orderType': order.get('orderType'),
+            'duration': order.get('duration'),
+            'session': order.get('session'),
+            'price': order.get('price'),
+            'stopPrice': order.get('stopPrice'),
+            'legs': []
+        }
+        
+        # Add leg details
+        for leg in order.get('orderLegCollection', []):
+            leg_key = {
+                'instruction': leg.get('instruction'),
+                'quantity': leg.get('quantity'),
+                'instrument': leg.get('instrument', {}).get('symbol')
+            }
+            order_key['legs'].append(leg_key)
+        
+        # Compute hash
+        order_str = json.dumps(order_key, sort_keys=True)
+        return hashlib.sha256(order_str.encode()).hexdigest()[:16]
+    
+    def _register_preview(self, order: Dict[str, Any]) -> str:
+        """
+        Register an order as previewed.
+        
+        Args:
+            order: Order payload dictionary
+            
+        Returns:
+            Order hash
+        """
+        order_hash = self._compute_order_hash(order)
+        self._preview_cache[order_hash] = datetime.now()
+        return order_hash
+    
+    def _is_previewed(self, order: Dict[str, Any]) -> bool:
+        """
+        Check if an order has been previewed and the preview hasn't expired.
+        
+        Args:
+            order: Order payload dictionary
+            
+        Returns:
+            True if order was recently previewed, False otherwise
+        """
+        order_hash = self._compute_order_hash(order)
+        
+        if order_hash not in self._preview_cache:
+            return False
+        
+        preview_time = self._preview_cache[order_hash]
+        expiry_time = preview_time + timedelta(minutes=self._preview_expiry_minutes)
+        
+        if datetime.now() > expiry_time:
+            # Preview expired, remove from cache
+            del self._preview_cache[order_hash]
+            return False
+        
+        return True
+    
+    def _clear_preview(self, order: Dict[str, Any]) -> None:
+        """
+        Clear preview record for an order after execution.
+        
+        Args:
+            order: Order payload dictionary
+        """
+        order_hash = self._compute_order_hash(order)
+        if order_hash in self._preview_cache:
+            del self._preview_cache[order_hash]
     
     def get_account_numbers(self) -> List[Dict[str, str]]:
         """
@@ -246,6 +336,9 @@ class SchwabTrader:
             # Parse response
             preview_data = response.json() if hasattr(response, 'json') else response
             
+            # Register this order as previewed (for safety mechanism)
+            order_hash = self._register_preview(order)
+            
             # Save preview to file for reference
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filepath = self.export_dir / f"order_preview_{timestamp}.json"
@@ -255,13 +348,15 @@ class SchwabTrader:
                     "timestamp": datetime.now().isoformat(),
                     "account_id": acct_id,
                     "order": order,
-                    "preview": preview_data
+                    "preview": preview_data,
+                    "order_hash": order_hash  # Include hash for tracking
                 }, f, indent=2)
             
             return {
                 "status": "preview_success",
                 "preview": preview_data,
                 "filepath": str(filepath),
+                "order_hash": order_hash,
                 "message": f"Order preview saved to {filepath}"
             }
         
@@ -993,18 +1088,26 @@ class SchwabTrader:
         self,
         order: Dict[str, Any],
         strategy_type: str = "option",
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        account_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Submit order to Schwab API or export to file in dry-run mode.
+        
+        SAFETY MECHANISM: Orders must be previewed before execution.
+        This prevents accidental live trades without review.
         
         Args:
             order: Order payload dictionary
             strategy_type: Type of strategy
             metadata: Additional metadata
+            account_id: Account hash value (uses self.account_id if not provided)
         
         Returns:
             Response dictionary with status and details
+            
+        Raises:
+            RuntimeError: If order not previewed or client not available
         """
         if self.dry_run:
             # Export to file instead of submitting
@@ -1012,15 +1115,109 @@ class SchwabTrader:
             return {
                 "status": "exported",
                 "filepath": filepath,
-                "message": f"Order exported to {filepath}",
+                "message": f"Order exported to {filepath} (DRY RUN)",
                 "order": order
             }
-        else:
-            # TODO: Implement live trading with Schwab API
-            # This would use the schwab-py client to submit the order
-            raise NotImplementedError(
-                "Live trading not yet implemented. Use dry_run=True to export orders."
+        
+        # LIVE TRADING MODE - Enforce safety checks
+        
+        # Safety Check 1: Order must be previewed first
+        if not self._is_previewed(order):
+            order_hash = self._compute_order_hash(order)
+            raise RuntimeError(
+                "SAFETY CHECK FAILED: Order must be previewed before execution.\n"
+                f"Order hash: {order_hash}\n"
+                "Call trader.preview_order(order) first, review the preview, "
+                "then call trader.submit_order(order) within 30 minutes."
             )
+        
+        # Safety Check 2: Client must be available
+        if not self.client:
+            raise RuntimeError(
+                "Schwab API client required for live trading. "
+                "Initialize SchwabTrader with a client instance."
+            )
+        
+        # Safety Check 3: Account ID must be provided
+        acct_id = account_id or self.account_id
+        if not acct_id:
+            raise RuntimeError(
+                "Account ID required for live trading. "
+                "Set SCHWAB_ACCOUNT_ID or pass account_id parameter."
+            )
+        
+        # Safety Check 4: Validate order structure
+        validation = self.validate_order(order)
+        if not validation['valid']:
+            raise RuntimeError(
+                f"Order validation failed:\n" + 
+                "\n".join(f"  - {err}" for err in validation['errors'])
+            )
+        
+        try:
+            # Submit order via Schwab API
+            schwab_client = self.client.client if hasattr(self.client, 'client') else self.client
+            response = schwab_client.place_order(acct_id, order)
+            
+            # Parse response
+            order_data = response.json() if hasattr(response, 'json') else response
+            
+            # Extract order ID from response
+            # Schwab typically returns order ID in Location header or response body
+            order_id = None
+            if hasattr(response, 'headers') and 'Location' in response.headers:
+                # Extract order ID from Location header
+                # Format: https://api.schwabapi.com/trader/v1/accounts/{accountId}/orders/{orderId}
+                location = response.headers['Location']
+                order_id = location.split('/')[-1] if '/' in location else None
+            elif isinstance(order_data, dict) and 'orderId' in order_data:
+                order_id = order_data['orderId']
+            
+            # Clear preview cache after successful submission
+            self._clear_preview(order)
+            
+            # Save execution record to file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"order_executed_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "account_id": acct_id,
+                    "order_id": order_id,
+                    "strategy_type": strategy_type,
+                    "order": order,
+                    "metadata": metadata or {},
+                    "response": order_data,
+                    "status": "LIVE_TRADE_EXECUTED"
+                }, f, indent=2)
+            
+            return {
+                "status": "executed",
+                "order_id": order_id,
+                "response": order_data,
+                "filepath": str(filepath),
+                "message": f"✅ Order executed successfully. Order ID: {order_id}"
+            }
+        
+        except Exception as e:
+            # Save error details
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = self.export_dir / f"order_error_{timestamp}.json"
+            
+            with open(filepath, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "account_id": acct_id,
+                    "strategy_type": strategy_type,
+                    "order": order,
+                    "metadata": metadata or {},
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "status": "EXECUTION_FAILED"
+                }, f, indent=2)
+            
+            raise RuntimeError(f"Failed to execute order: {e}")
     
     def validate_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         """

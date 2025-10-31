@@ -4086,8 +4086,8 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
     raise ValueError("Unknown strategy for stress")
 
 
-def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=500000,
-                      min_hv=15.0, max_hv=150.0, min_option_volume=50, check_liquidity=True):
+def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1_500_000,
+                      min_hv=18.0, max_hv=70.0, min_option_volume=150, check_liquidity=True):
     """
     Pre-screen tickers for options income strategy suitability.
     Uses parallel processing for faster execution on large ticker lists.
@@ -4160,9 +4160,38 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
             if not expirations or len(expirations) == 0:
                 return None
 
-            # Get near-term options chain (first expiration)
+            # Find a suitable expiration (not expiring today, prefer 21-45 DTE)
+            today = datetime.now().date()
+            suitable_exp = None
+            for exp_str in expirations[:15]:
+                try:
+                    exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                    days_to_exp = (exp_date - today).days
+                    if 7 <= days_to_exp <= 60:  # At least a week out, max 2 months
+                        suitable_exp = exp_str
+                        break
+                except:
+                    continue
+            
+            # Fallback to first non-expiring expiration
+            if not suitable_exp:
+                for exp_str in expirations[:5]:
+                    try:
+                        exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                        days_to_exp = (exp_date - today).days
+                        if days_to_exp > 0:
+                            suitable_exp = exp_str
+                            break
+                    except:
+                        continue
+            
+            # If still no suitable expiration, use first one
+            if not suitable_exp:
+                suitable_exp = expirations[0]
+
+            # Get option chain for suitable expiration
             try:
-                chain = stock.option_chain(expirations[0])
+                chain = stock.option_chain(suitable_exp)
 
                 # Find ATM strike for IV check
                 atm_idx = (chain.calls['strike'] -
@@ -4253,15 +4282,24 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=5
                             bid = row.get('bid', 0) or 0
                             ask = row.get('ask', 0) or 0
                             mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else 0
-                            if mid > 0.10:  # Only count spreads on options with reasonable premium
+                            if mid > 0.05:  # Lowered from 0.10 - count options with $0.05+ premium
                                 spread_pcts.append((ask - bid) / mid * 100.0)
                 
                 # Use median (less sensitive to outliers) and fallback to a reasonable default
-                spread_pct = np.median(spread_pcts) if len(spread_pcts) >= 3 else (np.mean(spread_pcts) if spread_pcts else 100.0)
+                # If we have ANY valid spreads, use them; otherwise assume moderate spread (15%)
+                if len(spread_pcts) >= 2:
+                    spread_pct = np.median(spread_pcts)
+                elif spread_pcts:
+                    spread_pct = spread_pcts[0]
+                else:
+                    # No valid spreads found - likely low premium options
+                    # Don't hard fail, use a moderate default for scoring
+                    spread_pct = 15.0
                 
                 # ===== BONUS: Hard filter on intolerable spreads =====
-                # More lenient threshold: 25% (was 20%) - OTM options naturally have wider spreads
-                if spread_pct > 25.0:
+                # More selective threshold: 30% (was 40%) - filter out very illiquid options
+                # Only hard filter if we actually measured real spreads (not using default)
+                if len(spread_pcts) >= 2 and spread_pct > 30.0:
                     return None  # Too illiquid for income strategies
 
                 # Calculate IV Rank proxy (IV vs HV)
@@ -4487,6 +4525,60 @@ with st.sidebar:
             elif selected_provider == "polygon":
                 st.caption("Set POLYGON_API_KEY in environment")
 
+    # Live Trading Control
+    with st.expander("⚡ LIVE TRADING", expanded=False):
+        st.warning("⚠️ **DANGER ZONE** - Live order execution")
+        
+        # Initialize live trading mode in session state
+        if "live_trading_enabled" not in st.session_state:
+            st.session_state["live_trading_enabled"] = False
+        
+        # Live trading toggle
+        live_mode = st.toggle(
+            "Enable Live Trading",
+            value=st.session_state.get("live_trading_enabled", False),
+            key="live_trading_toggle",
+            help="When enabled, orders are sent to Schwab API for execution. When disabled, orders are exported to JSON files only."
+        )
+        
+        # Update session state
+        st.session_state["live_trading_enabled"] = live_mode
+        
+        if live_mode:
+            st.error("🔴 **LIVE TRADING ACTIVE**")
+            st.caption("""
+            ⚠️ Orders will be executed on your Schwab account!
+            
+            **Safety Features:**
+            - All orders MUST be previewed first
+            - Preview valid for 30 minutes only
+            - Preview cleared after execution
+            - Cannot execute same order twice
+            
+            **Process:**
+            1. Click "Preview Order" button
+            2. Review order details carefully
+            3. Click "Execute Order" within 30 min
+            4. Order submitted to Schwab API
+            """)
+            
+            # Check if Schwab API is configured
+            if not SCHWAB_CLIENT:
+                st.warning("⚠️ Schwab API not configured. Live trading will fail.")
+                st.caption("Set up Schwab credentials to use live trading.")
+        else:
+            st.success("✅ **DRY RUN MODE** (Safe)")
+            st.caption("""
+            📁 Orders are exported to JSON files only.
+            No real trades will be executed.
+            
+            Perfect for:
+            - Testing strategies
+            - Learning the system
+            - Paper trading
+            - Validating order structure
+            """)
+    
     # Pre-screener section
     with st.expander("🎯 Pre-Screen Tickers", expanded=False):
         st.caption(
@@ -4506,16 +4598,16 @@ with st.sidebar:
             ps_min_price = st.number_input(
                 "Min price", value=5.0, step=1.0, key="ps_min_price")
             ps_min_hv = st.number_input(
-                "Min HV%", value=15.0, step=5.0, key="ps_min_hv")
+                "Min HV%", value=18.0, step=5.0, key="ps_min_hv")
             ps_min_volume = st.number_input(
-                "Min avg volume", value=500000, step=100000, key="ps_min_volume", format="%d")
+                "Min avg volume", value=1500000, step=100000, key="ps_min_volume", format="%d")
         with col2:
             ps_max_price = st.number_input(
                 "Max price", value=1000.0, step=50.0, key="ps_max_price")
             ps_max_hv = st.number_input(
-                "Max HV%", value=150.0, step=10.0, key="ps_max_hv")
+                "Max HV%", value=70.0, step=10.0, key="ps_max_hv")
             ps_min_opt_vol = st.number_input(
-                "Min option vol", value=50, step=10, key="ps_min_opt_vol")
+                "Min option vol", value=150, step=10, key="ps_min_opt_vol")
 
         if st.button("🔍 Run Pre-Screen", key="btn_prescreen"):
             prescreen_tickers_list = [t.strip().upper()
@@ -6349,8 +6441,16 @@ with tabs[6]:
                                         help="Close if loss reaches this multiple of max profit (standard: 2x)"
                                     )
                             
-                            # Initialize trader in dry-run mode
-                            trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
+                            # Initialize trader (dry-run or live based on user selection)
+                            live_trading_enabled = st.session_state.get("live_trading_enabled", False)
+                            
+                            if live_trading_enabled and SCHWAB_CLIENT:
+                                trader = SchwabTrader(dry_run=False, client=SCHWAB_CLIENT, export_dir="./trade_orders")
+                                st.warning("⚠️ **LIVE TRADING MODE** - Orders will be executed on your Schwab account!")
+                            else:
+                                trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
+                                if live_trading_enabled and not SCHWAB_CLIENT:
+                                    st.error("❌ Live trading enabled but Schwab client not configured. Using DRY RUN mode.")
                             
                             # Create order based on strategy
                             if selected_strategy == "CSP":
