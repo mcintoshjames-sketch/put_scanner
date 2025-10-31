@@ -4563,7 +4563,8 @@ with st.sidebar:
             """)
             
             # Check if Schwab API is configured
-            if not SCHWAB_CLIENT:
+            schwab_client = PROVIDER_INSTANCE.client if (PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, 'client')) else None
+            if not schwab_client:
                 st.warning("⚠️ Schwab API not configured. Live trading will fail.")
                 st.caption("Set up Schwab credentials to use live trading.")
         else:
@@ -6444,12 +6445,13 @@ with tabs[6]:
                             # Initialize trader (dry-run or live based on user selection)
                             live_trading_enabled = st.session_state.get("live_trading_enabled", False)
                             
-                            if live_trading_enabled and SCHWAB_CLIENT:
-                                trader = SchwabTrader(dry_run=False, client=SCHWAB_CLIENT, export_dir="./trade_orders")
+                            schwab_client = PROVIDER_INSTANCE.client if (PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, 'client')) else None
+                            if live_trading_enabled and schwab_client:
+                                trader = SchwabTrader(dry_run=False, client=schwab_client, export_dir="./trade_orders")
                                 st.warning("⚠️ **LIVE TRADING MODE** - Orders will be executed on your Schwab account!")
                             else:
                                 trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
-                                if live_trading_enabled and not SCHWAB_CLIENT:
+                                if live_trading_enabled and not schwab_client:
                                     st.error("❌ Live trading enabled but Schwab client not configured. Using DRY RUN mode.")
                             
                             # Create order based on strategy
