@@ -6988,186 +6988,186 @@ with tabs[6]:
                                 stop_loss_order_call = None
                                 stop_loss_result = None
                                 if generate_stop_loss:
-                                        if selected_strategy == "CSP":
-                                            # Risk: Close if option value reaches 2x entry premium (doubled loss)
-                                            entry_premium = float(selected['Premium'])
-                                            stop_loss_price = entry_premium * risk_multiplier
-                                            max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
-                                            
-                                            stop_loss_order = trader.create_option_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                strike=float(selected['Strike']),
-                                                option_type="PUT",
-                                                action="BUY_TO_CLOSE",
-                                                quantity=int(num_contracts),
-                                                order_type="LIMIT",
-                                                limit_price=stop_loss_price,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                                "entry_premium": entry_premium,
-                                                "stop_loss_price": stop_loss_price,
-                                                "max_loss_per_contract": max_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                    if selected_strategy == "CSP":
+                                        # Risk: Close if option value reaches 2x entry premium (doubled loss)
+                                        entry_premium = float(selected['Premium'])
+                                        stop_loss_price = entry_premium * risk_multiplier
+                                        max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
                                         
-                                        elif selected_strategy == "CC":
-                                            # Risk: Close if option value reaches 2x entry premium
-                                            entry_premium = float(selected['Premium'])
-                                            stop_loss_price = entry_premium * risk_multiplier
-                                            max_loss = entry_premium * (risk_multiplier - 1) * 100
-                                            
-                                            stop_loss_order = trader.create_option_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                strike=float(selected['Strike']),
-                                                option_type="CALL",
-                                                action="BUY_TO_CLOSE",
-                                                quantity=int(num_contracts),
-                                                order_type="LIMIT",
-                                                limit_price=stop_loss_price,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                                "entry_premium": entry_premium,
-                                                "stop_loss_price": stop_loss_price,
-                                                "max_loss_per_contract": max_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                        
-                                        elif selected_strategy == "IRON_CONDOR":
-                                            # Risk: Close if total spread cost reaches 2x entry credit
-                                            entry_credit = float(selected['NetCredit'])
-                                            stop_loss_debit = entry_credit * risk_multiplier
-                                            max_loss = (stop_loss_debit - entry_credit) * 100
-                                            
-                                            stop_loss_order = trader.create_iron_condor_exit_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                long_put_strike=float(selected['PutLongStrike']),
-                                                short_put_strike=float(selected['PutShortStrike']),
-                                                short_call_strike=float(selected['CallShortStrike']),
-                                                long_call_strike=float(selected['CallLongStrike']),
-                                                quantity=int(num_contracts),
-                                                limit_price=stop_loss_debit,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                                "entry_credit": entry_credit,
-                                                "stop_loss_debit": stop_loss_debit,
-                                                "max_loss_per_contract": max_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                        
-                                        elif selected_strategy == "BULL_PUT_SPREAD":
-                                            # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
-                                            entry_credit = float(selected['NetCredit'])
-                                            stop_loss_debit = entry_credit * risk_multiplier
-                                            max_loss = (stop_loss_debit - entry_credit) * 100
-                                            
-                                            stop_loss_order = trader.create_bull_put_spread_exit_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                sell_strike=float(selected['SellStrike']),
-                                                buy_strike=float(selected['BuyStrike']),
-                                                quantity=int(num_contracts),
-                                                limit_price=stop_loss_debit,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                                "entry_credit": entry_credit,
-                                                "stop_loss_debit": stop_loss_debit,
-                                                "max_loss_per_contract": max_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                        
-                                        elif selected_strategy == "BEAR_CALL_SPREAD":
-                                            # Risk: Close if total spread cost reaches 2x entry credit
-                                            entry_credit = float(selected['NetCredit'])
-                                            stop_loss_debit = entry_credit * risk_multiplier
-                                            max_loss = (stop_loss_debit - entry_credit) * 100
-                                            
-                                            stop_loss_order = trader.create_bear_call_spread_exit_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                sell_strike=float(selected['SellStrike']),
-                                                buy_strike=float(selected['BuyStrike']),
-                                                quantity=int(num_contracts),
-                                                limit_price=stop_loss_debit,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                                "entry_credit": entry_credit,
-                                                "stop_loss_debit": stop_loss_debit,
-                                                "max_loss_per_contract": max_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                        
-                                        elif selected_strategy == "COLLAR":
-                                            # Risk: Close call if it reaches 2x entry premium
-                                            call_entry = float(selected.get('CallPrem', 0))
-                                            call_stop_loss = call_entry * risk_multiplier
-                                            
-                                            stop_loss_order_call = trader.create_option_order(
-                                                symbol=selected['Ticker'],
-                                                expiration=selected['Exp'],
-                                                strike=float(selected['CallStrike']),
-                                                option_type="CALL",
-                                                action="BUY_TO_CLOSE",
-                                                quantity=int(num_contracts),
-                                                order_type="LIMIT",
-                                                limit_price=call_stop_loss,
-                                                duration="GTC"
-                                            )
-                                            stop_loss_metadata_call = {
-                                                **metadata,
-                                                "order_type": "STOP_LOSS",
-                                                "risk_trigger": f"{risk_multiplier}x max profit loss on call",
-                                                "leg": "CALL",
-                                                "entry_premium": call_entry,
-                                                "stop_loss_price": call_stop_loss
-                                            }
-                                            stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
+                                        stop_loss_order = trader.create_option_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['Strike']),
+                                        option_type="PUT",
+                                        action="BUY_TO_CLOSE",
+                                        quantity=int(num_contracts),
+                                        order_type="LIMIT",
+                                        limit_price=stop_loss_price,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                        "entry_premium": entry_premium,
+                                        "stop_loss_price": stop_loss_price,
+                                        "max_loss_per_contract": max_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                     
-                                # Display success message and files
-                                order_count = 2 if not generate_stop_loss else 3
-                                
-                                # Store orders in session state for persistence across reruns
-                                st.session_state.generated_orders = {
-                                    'entry_order': order,
-                                    'entry_result': result,
-                                    'exit_order': exit_order,
-                                    'exit_result': exit_result,
-                                    'stop_loss_order': stop_loss_order if generate_stop_loss else None,
-                                    'stop_loss_result': stop_loss_result if generate_stop_loss else None,
-                                    'generate_stop_loss': generate_stop_loss,
-                                    'profit_capture_pct': profit_capture_pct,
-                                    'risk_multiplier': risk_multiplier if generate_stop_loss else None,
-                                    'strategy_type': strategy_type,
-                                    'selected_strategy': selected_strategy,
-                                    # Store collar-specific stop-loss if needed
-                                    'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
-                                }
-                                
-                                st.success(f"✅ {order_count} order files generated successfully!")
+                                    elif selected_strategy == "CC":
+                                        # Risk: Close if option value reaches 2x entry premium
+                                        entry_premium = float(selected['Premium'])
+                                        stop_loss_price = entry_premium * risk_multiplier
+                                        max_loss = entry_premium * (risk_multiplier - 1) * 100
+                                        
+                                        stop_loss_order = trader.create_option_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['Strike']),
+                                        option_type="CALL",
+                                        action="BUY_TO_CLOSE",
+                                        quantity=int(num_contracts),
+                                        order_type="LIMIT",
+                                        limit_price=stop_loss_price,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                        "entry_premium": entry_premium,
+                                        "stop_loss_price": stop_loss_price,
+                                        "max_loss_per_contract": max_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                    
+                                    elif selected_strategy == "IRON_CONDOR":
+                                        # Risk: Close if total spread cost reaches 2x entry credit
+                                        entry_credit = float(selected['NetCredit'])
+                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        max_loss = (stop_loss_debit - entry_credit) * 100
+                                        
+                                        stop_loss_order = trader.create_iron_condor_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        long_put_strike=float(selected['PutLongStrike']),
+                                        short_put_strike=float(selected['PutShortStrike']),
+                                        short_call_strike=float(selected['CallShortStrike']),
+                                        long_call_strike=float(selected['CallLongStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=stop_loss_debit,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                        "entry_credit": entry_credit,
+                                        "stop_loss_debit": stop_loss_debit,
+                                        "max_loss_per_contract": max_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                    
+                                    elif selected_strategy == "BULL_PUT_SPREAD":
+                                        # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
+                                        entry_credit = float(selected['NetCredit'])
+                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        max_loss = (stop_loss_debit - entry_credit) * 100
+                                        
+                                        stop_loss_order = trader.create_bull_put_spread_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=stop_loss_debit,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                        "entry_credit": entry_credit,
+                                        "stop_loss_debit": stop_loss_debit,
+                                        "max_loss_per_contract": max_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                    
+                                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                                        # Risk: Close if total spread cost reaches 2x entry credit
+                                        entry_credit = float(selected['NetCredit'])
+                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        max_loss = (stop_loss_debit - entry_credit) * 100
+                                        
+                                        stop_loss_order = trader.create_bear_call_spread_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=stop_loss_debit,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                        "entry_credit": entry_credit,
+                                        "stop_loss_debit": stop_loss_debit,
+                                        "max_loss_per_contract": max_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                    
+                                    elif selected_strategy == "COLLAR":
+                                        # Risk: Close call if it reaches 2x entry premium
+                                        call_entry = float(selected.get('CallPrem', 0))
+                                        call_stop_loss = call_entry * risk_multiplier
+                                        
+                                        stop_loss_order_call = trader.create_option_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['CallStrike']),
+                                        option_type="CALL",
+                                        action="BUY_TO_CLOSE",
+                                        quantity=int(num_contracts),
+                                        order_type="LIMIT",
+                                        limit_price=call_stop_loss,
+                                        duration="GTC"
+                                        )
+                                        stop_loss_metadata_call = {
+                                        **metadata,
+                                        "order_type": "STOP_LOSS",
+                                        "risk_trigger": f"{risk_multiplier}x max profit loss on call",
+                                        "leg": "CALL",
+                                        "entry_premium": call_entry,
+                                        "stop_loss_price": call_stop_loss
+                                        }
+                                        stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
+                                    
+                                    # Display success message and files
+                                    order_count = 2 if not generate_stop_loss else 3
+                                    
+                                    # Store orders in session state for persistence across reruns
+                                    st.session_state.generated_orders = {
+                                        'entry_order': order,
+                                        'entry_result': result,
+                                        'exit_order': exit_order,
+                                        'exit_result': exit_result,
+                                        'stop_loss_order': stop_loss_order if generate_stop_loss else None,
+                                        'stop_loss_result': stop_loss_result if generate_stop_loss else None,
+                                        'generate_stop_loss': generate_stop_loss,
+                                        'profit_capture_pct': profit_capture_pct,
+                                        'risk_multiplier': risk_multiplier if generate_stop_loss else None,
+                                        'strategy_type': strategy_type,
+                                        'selected_strategy': selected_strategy,
+                                        # Store collar-specific stop-loss if needed
+                                        'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
+                                    }
+                                    
+                                    st.success(f"✅ {order_count} order files generated successfully!")
                                 else:
-                                st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
+                                    st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
                         
                         except Exception as e:
                             st.error(f"❌ Error generating order: {str(e)}")
@@ -7215,20 +7215,20 @@ with tabs[6]:
                     
                     # Check for preview result in session state
                     if 'preview_entry' in st.session_state.preview_results:
-                            preview_result = st.session_state.preview_results['preview_entry']
-                            st.success("✅ Entry order preview received!")
-                            with st.expander("📊 Preview Details", expanded=True):
-                                preview_data = preview_result['preview']
-                                if isinstance(preview_data, dict):
-                                    if 'commission' in preview_data:
-                                        st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                    if 'estimatedTotalAmount' in preview_data:
-                                        st.metric("Estimated Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                    if 'buyingPowerEffect' in preview_data:
-                                        st.metric("Buying Power Impact", f"${preview_data['buyingPowerEffect']:.2f}")
-                                    if 'marginRequirement' in preview_data:
-                                        st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
-                                    st.json(preview_data)
+                        preview_result = st.session_state.preview_results['preview_entry']
+                        st.success("✅ Entry order preview received!")
+                        with st.expander("📊 Preview Details", expanded=True):
+                            preview_data = preview_result['preview']
+                            if isinstance(preview_data, dict):
+                                if 'commission' in preview_data:
+                                    st.metric("Commission", f"${preview_data['commission']:.2f}")
+                                if 'estimatedTotalAmount' in preview_data:
+                                    st.metric("Estimated Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
+                                if 'buyingPowerEffect' in preview_data:
+                                    st.metric("Buying Power Impact", f"${preview_data['buyingPowerEffect']:.2f}")
+                                if 'marginRequirement' in preview_data:
+                                    st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
+                                st.json(preview_data)
                             else:
                                 st.json(preview_data)
                     
@@ -7236,7 +7236,7 @@ with tabs[6]:
                     col_preview_entry, col_dl_entry = st.columns(2)
                     
                     with col_preview_entry:
-                            if st.button("🔍 Preview", key="preview_entry_btn", use_container_width=True):
+                        if st.button("🔍 Preview", key="preview_entry_btn", use_container_width=True):
                                 try:
                                     from providers.schwab_trading import SchwabTrader
                                     from providers.schwab import SchwabClient
