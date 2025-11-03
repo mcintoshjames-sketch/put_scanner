@@ -7003,6 +7003,7 @@ with tabs[6]:
                                     
                                     # Generate stop-loss orders if requested
                                     stop_loss_order = None
+                                    stop_loss_order_call = None
                                     stop_loss_result = None
                                     if generate_stop_loss:
                                         if selected_strategy == "CSP":
