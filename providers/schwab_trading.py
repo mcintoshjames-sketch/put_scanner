@@ -250,6 +250,124 @@ class SchwabTrader:
         Check if account has sufficient buying power for a trade.
         
         Args:
+            required_amount: Amount of buying power required
+            account_id: Account hash value (uses self.account_id if not provided)
+        
+        Returns:
+            Dictionary with buying power details and sufficiency check
+        """
+        account_data = self.get_account_info(account_id)
+        
+        # Extract buying power from response
+        securities_account = account_data.get("securitiesAccount", {})
+        current_balances = securities_account.get("currentBalances", {})
+        
+        cash_balance = current_balances.get("cashBalance", 0.0)
+        buying_power = current_balances.get("buyingPower", 0.0)
+        option_bp = current_balances.get("optionBuyingPower", 0.0)
+        
+        return {
+            "cashBalance": cash_balance,
+            "buyingPower": buying_power,
+            "optionBuyingPower": option_bp,
+            "requiredAmount": required_amount,
+            "hasSufficientFunds": buying_power >= required_amount
+        }
+    
+    def check_stock_position(
+        self,
+        symbol: str,
+        required_shares: int,
+        account_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Check if account has sufficient shares of a stock for covered call writing.
+        
+        Args:
+            symbol: Stock ticker symbol
+            required_shares: Number of shares required (100 per contract)
+            account_id: Account hash value (uses self.account_id if not provided)
+        
+        Returns:
+            Dictionary with position details:
+            {
+                "symbol": str,
+                "sharesOwned": int,
+                "sharesRequired": int,
+                "hasSufficientShares": bool,
+                "shortfall": int,  # If negative, need to buy this many shares
+                "averagePrice": float,  # Cost basis per share
+                "marketValue": float
+            }
+        """
+        try:
+            account_data = self.get_account_info(account_id)
+            
+            # Extract positions
+            securities_account = account_data.get("securitiesAccount", {})
+            positions = securities_account.get("positions", [])
+            
+            # Find the stock position
+            stock_position = None
+            for pos in positions:
+                instrument = pos.get("instrument", {})
+                if instrument.get("symbol", "").upper() == symbol.upper() and \
+                   instrument.get("assetType") == "EQUITY":
+                    stock_position = pos
+                    break
+            
+            if not stock_position:
+                # No position found
+                return {
+                    "symbol": symbol,
+                    "sharesOwned": 0,
+                    "sharesRequired": required_shares,
+                    "hasSufficientShares": False,
+                    "shortfall": required_shares,
+                    "averagePrice": 0.0,
+                    "marketValue": 0.0,
+                    "message": f"No {symbol} shares found in account. You must own {required_shares} shares to write covered calls."
+                }
+            
+            # Parse position details
+            shares_owned = int(stock_position.get("longQuantity", 0))
+            avg_price = float(stock_position.get("averagePrice", 0.0))
+            market_value = float(stock_position.get("marketValue", 0.0))
+            
+            shortfall = max(0, required_shares - shares_owned)
+            
+            return {
+                "symbol": symbol,
+                "sharesOwned": shares_owned,
+                "sharesRequired": required_shares,
+                "hasSufficientShares": shares_owned >= required_shares,
+                "shortfall": shortfall,
+                "averagePrice": avg_price,
+                "marketValue": market_value,
+                "message": f"You own {shares_owned} shares (need {required_shares})" if shares_owned < required_shares
+                          else f"✓ You own {shares_owned} shares (sufficient for {shares_owned // 100} covered calls)"
+            }
+            
+        except Exception as e:
+            return {
+                "symbol": symbol,
+                "sharesOwned": 0,
+                "sharesRequired": required_shares,
+                "hasSufficientShares": False,
+                "shortfall": required_shares,
+                "error": str(e),
+                "message": f"Unable to verify stock position: {e}"
+            }
+    
+    def check_buying_power(
+        self,
+        required_amount: float,
+        account_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Check if account has sufficient buying power for a trade.
+        
+        Args:
             required_amount: Amount of buying power needed (e.g., for cash-secured put)
             account_id: Account hash value (uses self.account_id if not provided)
         
@@ -470,14 +588,26 @@ class SchwabTrader:
         duration: Literal["DAY", "GTC"] = "DAY"
     ) -> Dict[str, Any]:
         """
-        Create a cash-secured put order (sell to open).
+        Create a cash-secured put order (sell to open put option).
+        
+        IMPORTANT: This creates a single-leg SELL_TO_OPEN order. For Schwab to approve
+        this as a cash-secured put (Level 1 options approval), you MUST have sufficient
+        cash/buying power in your account to cover the maximum loss:
+        - Required cash = strike_price * 100 * quantity
+        - Example: 5 contracts at $50 strike = $25,000 required
+        
+        If you don't have sufficient cash, Schwab will reject this order.
+        
+        Before submitting this order:
+        1. Verify buying power using check_buying_power()
+        2. Or use preview_order() to see if Schwab will accept it
         
         Args:
             symbol: Underlying stock symbol
             expiration: Option expiration date (YYYY-MM-DD)
             strike: Strike price
             quantity: Number of contracts
-            limit_price: Limit price (premium to receive)
+            limit_price: Limit price (premium to receive per share)
             duration: Order duration
         
         Returns:
@@ -495,6 +625,93 @@ class SchwabTrader:
             duration=duration
         )
     
+    def create_buy_write_order(
+        self,
+        symbol: str,
+        expiration: str,
+        strike: float,
+        quantity: int,
+        stock_price_limit: float,
+        option_credit: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a buy-write order (buy stock + sell covered call simultaneously).
+        
+        This is a 2-leg order that Schwab recognizes as a legitimate covered call
+        strategy. Both legs execute together atomically - you won't end up with 
+        stock but no call sold (or vice versa).
+        
+        ADVANTAGES over single-leg covered call:
+        - Works with Level 2/3 approval (don't need to own stock first)
+        - Schwab recognizes it as a covered call strategy
+        - Both legs fill together (atomic execution)
+        - Better for entering new positions
+        
+        NET DEBIT CALCULATION:
+        - You pay: stock_price_limit × shares
+        - You receive: option_credit × 100 × quantity
+        - Net debit per share = stock_price_limit - option_credit
+        
+        Example: Buy 100 AAPL at $150, sell 1 call for $3.00
+        - Pay: $15,000 for stock
+        - Receive: $300 for call
+        - Net: $14,700 (or $147.00 per share)
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            strike: Strike price for the call option
+            quantity: Number of contracts (also equals shares/100)
+            stock_price_limit: Maximum price you'll pay per share for stock
+            option_credit: Minimum credit you want per share for the call
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary for a 2-leg buy-write
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build call option symbol
+        call_symbol = f"{symbol_padded}{exp_str}C{int(strike * 1000):08d}"
+        
+        # Calculate net debit per share
+        # You pay stock_price_limit, receive option_credit, net is the difference
+        net_debit_per_share = stock_price_limit - option_credit
+        shares = quantity * 100
+        
+        # Build 2-leg order
+        order = {
+            "orderType": "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": round(net_debit_per_share, 2),  # Net debit per share
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY",
+                    "quantity": shares,
+                    "instrument": {
+                        "symbol": symbol,
+                        "assetType": "EQUITY"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": call_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
     def create_covered_call_order(
         self,
         symbol: str,
@@ -505,14 +722,33 @@ class SchwabTrader:
         duration: Literal["DAY", "GTC"] = "DAY"
     ) -> Dict[str, Any]:
         """
-        Create a covered call order (sell to open).
+        Create a covered call order (sell to open call option).
+        
+        IMPORTANT: This creates a single-leg SELL_TO_OPEN order. For Schwab to approve
+        this as a covered call (Level 1 options approval), you MUST already own the 
+        underlying shares in your account:
+        - 1 contract requires 100 shares
+        - 5 contracts require 500 shares, etc.
+        
+        If you don't own the shares, Schwab will reject this as a "naked short call"
+        which requires Level 4 options approval.
+        
+        ALTERNATIVE for Level 3 approval:
+        If you don't own the stock yet, use create_buy_write_order() instead. This
+        creates a 2-leg order that buys the stock and sells the call simultaneously,
+        which Schwab recognizes as a legitimate covered call strategy.
+        
+        Before submitting this order:
+        1. Verify you own sufficient shares using check_stock_position()
+        2. Or use create_buy_write_order() to buy stock + sell call together
+        2. Or use preview_order() to see if Schwab will accept it
         
         Args:
             symbol: Underlying stock symbol
             expiration: Option expiration date (YYYY-MM-DD)
             strike: Strike price
-            quantity: Number of contracts
-            limit_price: Limit price (premium to receive)
+            quantity: Number of contracts (each covers 100 shares)
+            limit_price: Limit price (premium to receive per share)
             duration: Order duration
         
         Returns:

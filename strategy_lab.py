@@ -6048,6 +6048,30 @@ with tabs[6]:
                             col_c1, col_c2 = st.columns(2)
                             col_c1.metric("Short Call", f"${selected['CallShortStrike']:.2f}")
                             col_c2.metric("Long Call", f"${selected['CallLongStrike']:.2f}")
+                        
+                        # Options Approval Level Information
+                        st.divider()
+                        if selected_strategy == "CC":
+                            st.info(
+                                "**📋 Covered Call Options (you have Level 3 approval):**\n\n"
+                                "**Option 1 - Already Own Stock:**\n"
+                                f"• You must own **{num_contracts * 100} shares** of {selected['Ticker']} to sell calls directly\n"
+                                f"• The app will verify your stock position before submitting\n\n"
+                                "**Option 2 - Buy-Write Order (Recommended if you don't own stock):**\n"
+                                f"• Submit a 2-leg order that buys stock + sells call simultaneously\n"
+                                f"• Both legs fill together (atomic execution)\n"
+                                f"• Schwab recognizes this as a legitimate covered call strategy\n"
+                                f"• Works with Level 3 approval (no need to own stock first)\n\n"
+                                "The app will offer the buy-write option if you don't have sufficient shares."
+                            )
+                        elif selected_strategy == "CSP":
+                            required_cash = selected['Strike'] * 100 * num_contracts
+                            st.info(
+                                "**📋 Cash-Secured Put Requirements (Schwab Level 1 Options Approval):**\n\n"
+                                f"• You need approximately **${required_cash:,.2f}** in cash/buying power\n"
+                                f"• This covers the maximum loss if assigned at the strike price\n"
+                                f"• The app will verify your buying power before submitting to Schwab"
+                            )
                             st.metric("Net Credit", f"${selected['NetCredit']:.2f}")
                         elif selected_strategy == "BULL_PUT_SPREAD":
                             st.write("**Bull Put Spread (2-leg):**")
@@ -6263,6 +6287,129 @@ with tabs[6]:
                                     # Initialize trader (NOT dry-run, we want to call API)
                                     trader = SchwabTrader(dry_run=False, client=schwab_client)
                                     
+                                    # PRE-FLIGHT CHECKS based on strategy
+                                    preflight_warnings = []
+                                    preflight_errors = []
+                                    use_buy_write = False  # Flag to switch to buy-write order
+                                    
+                                    if selected_strategy == "CC":
+                                        # Check if user owns the underlying stock
+                                        required_shares = int(num_contracts) * 100
+                                        try:
+                                            position_check = trader.check_stock_position(
+                                                symbol=selected['Ticker'],
+                                                required_shares=required_shares,
+                                                account_id=selected_account_id
+                                            )
+                                            
+                                            if not position_check['hasSufficientShares']:
+                                                # Store position check in session state for buy-write option
+                                                st.session_state['_position_check'] = position_check
+                                                
+                                                # Offer buy-write alternative (Level 3 approval)
+                                                st.warning(
+                                                    f"⚠️ **No Stock Position Found**: {position_check['message']}\n\n"
+                                                    f"You currently own {position_check['sharesOwned']} shares but need {required_shares} shares."
+                                                )
+                                                
+                                                st.info(
+                                                    "**💡 Alternative Option (Level 3 Approval Required):**\n\n"
+                                                    "Since you have Level 3 options approval, you can submit a **Buy-Write Order** "
+                                                    "that buys the stock and sells the call simultaneously as a 2-leg strategy. "
+                                                    "Schwab will recognize this as a legitimate covered call and both legs will fill together.\n\n"
+                                                    "✓ No need to own stock first\n"
+                                                    "✓ Atomic execution (both legs fill together)\n"
+                                                    "✓ Recognized as covered call strategy"
+                                                )
+                                                
+                                                # Let user choose
+                                                use_buy_write_choice = st.radio(
+                                                    "How would you like to proceed?",
+                                                    options=[
+                                                        "Cancel - I'll buy the stock first",
+                                                        "Use Buy-Write Order (buy stock + sell call together)"
+                                                    ],
+                                                    key="buy_write_choice"
+                                                )
+                                                
+                                                if "Cancel" in use_buy_write_choice:
+                                                    st.stop()  # Stop execution, user will buy stock first
+                                                else:
+                                                    use_buy_write = True
+                                                    # Get current stock price for the order
+                                                    try:
+                                                        stock = yf.Ticker(selected['Ticker'])
+                                                        current_price = stock.info.get('currentPrice') or stock.info.get('regularMarketPrice', 0)
+                                                        if current_price == 0:
+                                                            hist = stock.history(period='1d')
+                                                            if not hist.empty:
+                                                                current_price = hist['Close'].iloc[-1]
+                                                        
+                                                        st.session_state['_stock_price'] = current_price
+                                                        st.info(f"📊 Current stock price: ${current_price:.2f}")
+                                                        
+                                                        # Show net debit calculation
+                                                        net_debit = current_price - float(limit_price)
+                                                        total_cost = net_debit * 100 * int(num_contracts)
+                                                        st.write(f"**Net Debit:** ${net_debit:.2f} per share (${total_cost:,.2f} total)")
+                                                        st.caption(
+                                                            f"You'll pay ~${current_price:.2f} for stock, "
+                                                            f"receive ~${limit_price:.2f} for call = "
+                                                            f"net ${net_debit:.2f} per share"
+                                                        )
+                                                    except Exception as e:
+                                                        st.error(f"Could not get current stock price: {e}")
+                                                        st.stop()
+                                            else:
+                                                preflight_warnings.append(
+                                                    f"✅ **Stock Position Verified**: {position_check['message']}"
+                                                )
+                                        except Exception as e:
+                                            preflight_warnings.append(
+                                                f"⚠️ **Unable to verify stock position**: {str(e)}\n\n"
+                                                f"Make sure you own {required_shares} shares of {selected['Ticker']} "
+                                                f"or consider using a buy-write order (Level 3 approval)."
+                                            )
+                                    
+                                    elif selected_strategy == "CSP":
+                                        # Check if user has sufficient buying power
+                                        required_bp = float(selected['Strike']) * 100 * int(num_contracts)
+                                        try:
+                                            bp_check = trader.check_buying_power(
+                                                required_amount=required_bp,
+                                                account_id=selected_account_id
+                                            )
+                                            
+                                            if not bp_check['hasSufficientFunds']:
+                                                preflight_warnings.append(
+                                                    f"⚠️ **Buying Power Check**: You may need ${required_bp:,.2f} in cash/margin to secure this put. "
+                                                    f"Current buying power: ${bp_check['buyingPower']:,.2f}"
+                                                )
+                                            else:
+                                                preflight_warnings.append(
+                                                    f"✅ **Buying Power Verified**: ${bp_check['buyingPower']:,.2f} available (need ${required_bp:,.2f})"
+                                                )
+                                        except Exception as e:
+                                            preflight_warnings.append(
+                                                f"⚠️ **Unable to verify buying power**: {str(e)}\n\n"
+                                                f"Make sure you have ~${required_bp:,.2f} available."
+                                            )
+                                    
+                                    # Display pre-flight warnings/errors
+                                    if preflight_errors:
+                                        for error in preflight_errors:
+                                            st.error(error)
+                                        st.info("**💡 How to fix**: Either buy the required shares first, or use buy-write order (Level 3).")
+                                        # Don't create order if there are errors
+                                        st.stop()
+                                    
+                                    if preflight_warnings:
+                                        for warning in preflight_warnings:
+                                            if "✅" in warning:
+                                                st.success(warning)
+                                            else:
+                                                st.warning(warning)
+                                    
                                     # Create order based on strategy
                                     if selected_strategy == "CSP":
                                         order = trader.create_cash_secured_put_order(
@@ -6274,14 +6421,32 @@ with tabs[6]:
                                             duration=order_duration
                                         )
                                     elif selected_strategy == "CC":
-                                        order = trader.create_covered_call_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            strike=float(selected['Strike']),
-                                            quantity=int(num_contracts),
-                                            limit_price=float(limit_price),
-                                            duration=order_duration
-                                        )
+                                        if use_buy_write:
+                                            # Create buy-write order (buy stock + sell call)
+                                            stock_price = st.session_state.get('_stock_price', 0)
+                                            order = trader.create_buy_write_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                strike=float(selected['Strike']),
+                                                quantity=int(num_contracts),
+                                                stock_price_limit=stock_price * 1.01,  # Allow 1% slippage
+                                                option_credit=float(limit_price),
+                                                duration=order_duration
+                                            )
+                                            st.info(
+                                                f"📦 **Buy-Write Order Created**: This will buy {int(num_contracts) * 100} shares "
+                                                f"of {selected['Ticker']} and sell {int(num_contracts)} call(s) simultaneously."
+                                            )
+                                        else:
+                                            # Standard covered call (user already owns stock)
+                                            order = trader.create_covered_call_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                strike=float(selected['Strike']),
+                                                quantity=int(num_contracts),
+                                                limit_price=float(limit_price),
+                                                duration=order_duration
+                                            )
                                     elif selected_strategy == "COLLAR":
                                         order = trader.create_collar_order(
                                             symbol=selected['Ticker'],
