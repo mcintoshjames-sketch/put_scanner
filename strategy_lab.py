@@ -6268,8 +6268,94 @@ with tabs[6]:
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
                 
+                # PRE-FLIGHT CHECK for CC: Check stock position and offer buy-write if needed
+                show_buy_write_option = False
+                buy_write_stock_price = None
+                
+                if selected_strategy == "CC" and USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
+                    try:
+                        from providers.schwab_trading import SchwabTrader
+                        schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
+                        if schwab_client:
+                            trader = SchwabTrader(dry_run=False, client=schwab_client)
+                            required_shares = int(num_contracts) * 100
+                            
+                            try:
+                                position_check = trader.check_stock_position(
+                                    symbol=selected['Ticker'],
+                                    required_shares=required_shares
+                                )
+                                
+                                if not position_check['hasSufficientShares']:
+                                    show_buy_write_option = True
+                                    st.warning(
+                                        f"⚠️ **No Stock Position Found**: {position_check['message']}\n\n"
+                                        f"You currently own {position_check['sharesOwned']} shares but need {required_shares} shares."
+                                    )
+                                    
+                                    st.info(
+                                        "**💡 Alternative Option (Level 3 Approval Required):**\n\n"
+                                        "Since you have Level 3 options approval, you can submit a **Buy-Write Order** "
+                                        "that buys the stock and sells the call simultaneously as a 2-leg strategy. "
+                                        "Schwab will recognize this as a legitimate covered call and both legs will fill together.\n\n"
+                                        "✓ No need to own stock first\n"
+                                        "✓ Atomic execution (both legs fill together)\n"
+                                        "✓ Recognized as covered call strategy"
+                                    )
+                                    
+                                    # Let user choose
+                                    use_buy_write_choice = st.radio(
+                                        "How would you like to proceed?",
+                                        options=[
+                                            "Cancel - I'll buy the stock first",
+                                            "Use Buy-Write Order (buy stock + sell call together)"
+                                        ],
+                                        key="buy_write_choice"
+                                    )
+                                    
+                                    if "Buy-Write" in use_buy_write_choice:
+                                        # Get current stock price for the order
+                                        try:
+                                            import yfinance as yf
+                                            stock = yf.Ticker(selected['Ticker'])
+                                            current_price = stock.info.get('currentPrice') or stock.info.get('regularMarketPrice', 0)
+                                            if current_price == 0:
+                                                hist = stock.history(period='1d')
+                                                if not hist.empty:
+                                                    current_price = hist['Close'].iloc[-1]
+                                            
+                                            buy_write_stock_price = current_price
+                                            st.info(f"📊 Current stock price: ${current_price:.2f}")
+                                            
+                                            # Show net debit calculation
+                                            net_debit = current_price - float(limit_price)
+                                            total_cost = net_debit * 100 * int(num_contracts)
+                                            st.write(f"**Net Debit:** ${net_debit:.2f} per share (${total_cost:,.2f} total)")
+                                            st.caption(
+                                                f"You'll pay ~${current_price:.2f} for stock, "
+                                                f"receive ~${limit_price:.2f} for call = "
+                                                f"net ${net_debit:.2f} per share"
+                                            )
+                                        except Exception as e:
+                                            st.error(f"Could not get current stock price: {e}")
+                                            show_buy_write_option = False
+                                else:
+                                    st.success(f"✅ **Stock Position Verified**: {position_check['message']}")
+                            except Exception as e:
+                                st.warning(f"⚠️ **Unable to verify stock position**: {str(e)}")
+                    except Exception as e:
+                        st.warning(f"Could not perform pre-flight check: {e}")
+                
                 with col_preview:
-                    if st.button("🔍 Preview Order with Schwab API", use_container_width=True):
+                    # Disable button if user chose "Cancel"
+                    preview_disabled = False
+                    if show_buy_write_option:
+                        use_buy_write_choice = st.session_state.get('buy_write_choice', 'Cancel - I\'ll buy the stock first')
+                        if "Cancel" in use_buy_write_choice:
+                            preview_disabled = True
+                            st.info("💡 Buy the stock first, then come back to create a covered call order")
+                    
+                    if st.button("🔍 Preview Order with Schwab API", use_container_width=True, disabled=preview_disabled):
                         try:
                             from providers.schwab_trading import SchwabTrader
                             from providers.schwab import SchwabClient
@@ -6294,82 +6380,14 @@ with tabs[6]:
                                     use_buy_write = False  # Flag to switch to buy-write order
                                     
                                     if selected_strategy == "CC":
-                                        # Check if user owns the underlying stock
-                                        required_shares = int(num_contracts) * 100
-                                        try:
-                                            position_check = trader.check_stock_position(
-                                                symbol=selected['Ticker'],
-                                                required_shares=required_shares
-                                            )
-                                            
-                                            if not position_check['hasSufficientShares']:
-                                                # Store position check in session state for buy-write option
-                                                st.session_state['_position_check'] = position_check
-                                                
-                                                # Offer buy-write alternative (Level 3 approval)
-                                                st.warning(
-                                                    f"⚠️ **No Stock Position Found**: {position_check['message']}\n\n"
-                                                    f"You currently own {position_check['sharesOwned']} shares but need {required_shares} shares."
-                                                )
-                                                
-                                                st.info(
-                                                    "**💡 Alternative Option (Level 3 Approval Required):**\n\n"
-                                                    "Since you have Level 3 options approval, you can submit a **Buy-Write Order** "
-                                                    "that buys the stock and sells the call simultaneously as a 2-leg strategy. "
-                                                    "Schwab will recognize this as a legitimate covered call and both legs will fill together.\n\n"
-                                                    "✓ No need to own stock first\n"
-                                                    "✓ Atomic execution (both legs fill together)\n"
-                                                    "✓ Recognized as covered call strategy"
-                                                )
-                                                
-                                                # Let user choose
-                                                use_buy_write_choice = st.radio(
-                                                    "How would you like to proceed?",
-                                                    options=[
-                                                        "Cancel - I'll buy the stock first",
-                                                        "Use Buy-Write Order (buy stock + sell call together)"
-                                                    ],
-                                                    key="buy_write_choice"
-                                                )
-                                                
-                                                if "Cancel" in use_buy_write_choice:
-                                                    st.stop()  # Stop execution, user will buy stock first
-                                                else:
-                                                    use_buy_write = True
-                                                    # Get current stock price for the order
-                                                    try:
-                                                        stock = yf.Ticker(selected['Ticker'])
-                                                        current_price = stock.info.get('currentPrice') or stock.info.get('regularMarketPrice', 0)
-                                                        if current_price == 0:
-                                                            hist = stock.history(period='1d')
-                                                            if not hist.empty:
-                                                                current_price = hist['Close'].iloc[-1]
-                                                        
-                                                        st.session_state['_stock_price'] = current_price
-                                                        st.info(f"📊 Current stock price: ${current_price:.2f}")
-                                                        
-                                                        # Show net debit calculation
-                                                        net_debit = current_price - float(limit_price)
-                                                        total_cost = net_debit * 100 * int(num_contracts)
-                                                        st.write(f"**Net Debit:** ${net_debit:.2f} per share (${total_cost:,.2f} total)")
-                                                        st.caption(
-                                                            f"You'll pay ~${current_price:.2f} for stock, "
-                                                            f"receive ~${limit_price:.2f} for call = "
-                                                            f"net ${net_debit:.2f} per share"
-                                                        )
-                                                    except Exception as e:
-                                                        st.error(f"Could not get current stock price: {e}")
-                                                        st.stop()
-                                            else:
-                                                preflight_warnings.append(
-                                                    f"✅ **Stock Position Verified**: {position_check['message']}"
-                                                )
-                                        except Exception as e:
+                                        # Check if buy-write was selected
+                                        if show_buy_write_option and buy_write_stock_price:
+                                            use_buy_write = True
+                                            st.session_state['_stock_price'] = buy_write_stock_price
                                             preflight_warnings.append(
-                                                f"⚠️ **Unable to verify stock position**: {str(e)}\n\n"
-                                                f"Make sure you own {required_shares} shares of {selected['Ticker']} "
-                                                f"or consider using a buy-write order (Level 3 approval)."
+                                                f"📦 **Using Buy-Write Order**: Will buy {int(num_contracts) * 100} shares + sell {int(num_contracts)} call(s)"
                                             )
+                                        # If no buy-write option shown, user must own stock (already checked above)
                                     
                                     elif selected_strategy == "CSP":
                                         # Check if user has sufficient buying power
