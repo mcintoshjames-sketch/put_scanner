@@ -7002,6 +7002,7 @@ with tabs[6]:
                                         exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     # Generate stop-loss orders if requested
+                                    stop_loss_order = None
                                     stop_loss_result = None
                                     if generate_stop_loss:
                                         if selected_strategy == "CSP":
