@@ -6055,7 +6055,7 @@ with tabs[6]:
                             st.info(
                                 "**📋 Covered Call Options (you have Level 3 approval):**\n\n"
                                 "**Option 1 - Already Own Stock:**\n"
-                                f"• You must own **{num_contracts * 100} shares** of {selected['Ticker']} to sell calls directly\n"
+                                f"• You must own **100 shares per contract** of {selected['Ticker']} to sell calls directly\n"
                                 f"• The app will verify your stock position before submitting\n\n"
                                 "**Option 2 - Buy-Write Order (Recommended if you don't own stock):**\n"
                                 f"• Submit a 2-leg order that buys stock + sells call simultaneously\n"
@@ -6065,10 +6065,11 @@ with tabs[6]:
                                 "The app will offer the buy-write option if you don't have sufficient shares."
                             )
                         elif selected_strategy == "CSP":
-                            required_cash = selected['Strike'] * 100 * num_contracts
+                            # Calculate required cash based on the strike price (100 shares per contract)
+                            required_cash_per_contract = selected['Strike'] * 100
                             st.info(
                                 "**📋 Cash-Secured Put Requirements (Schwab Level 1 Options Approval):**\n\n"
-                                f"• You need approximately **${required_cash:,.2f}** in cash/buying power\n"
+                                f"• You need approximately **${required_cash_per_contract:,.2f} per contract** in cash/buying power\n"
                                 f"• This covers the maximum loss if assigned at the strike price\n"
                                 f"• The app will verify your buying power before submitting to Schwab"
                             )
