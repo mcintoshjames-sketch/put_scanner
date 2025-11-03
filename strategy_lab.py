@@ -59,7 +59,9 @@ from options_math import (
     trailing_dividend_info,
     get_earnings_date,
     gbm_terminal_prices,
-    mc_pnl
+    mc_pnl,
+    _bs_d1_d2,  # Helper function for d1/d2 calculations
+    _norm_cdf   # Normal CDF helper
 )
 
 # Thread-safe diagnostics counters (accessible from worker threads)
@@ -569,13 +571,6 @@ def _mid_price(bid, ask, last):
     if last == last and last > 0:
         return last
     return float("nan")
-
-
-def _norm_cdf(x):
-    try:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-    except Exception:
-        return float("nan")
 
 
 # ----------------------------- Expiration Safety Module -----------------------------
