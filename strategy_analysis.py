@@ -44,8 +44,8 @@ from options_math import (
 
 def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, min_roi, min_cushion,
                 min_poew, earn_window, risk_free, per_contract_cap=None, bill_yield=0.0):
-    # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    # Import from data_fetching to avoid circular import
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -308,7 +308,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
 def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, min_roi,
                earn_window, risk_free, include_dividends=True, bill_yield=0.0):
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -579,7 +579,7 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
                    call_delta_target, put_delta_target, earn_window, risk_free,
                    include_dividends=True, min_net_credit=None, bill_yield=0.0):
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -837,7 +837,7 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
     Returns DataFrame with ranked Iron Condor opportunities.
     """
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -1195,7 +1195,7 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
     Returns DataFrame with ranked Bull Put Spread opportunities.
     """
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -1568,7 +1568,7 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
     Returns DataFrame with ranked Bear Call Spread opportunities.
     """
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int, effective_credit, 
         effective_debit, estimate_next_ex_div, check_expiration_risk
@@ -1958,7 +1958,7 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
         pd.DataFrame with screening metrics for passed tickers, sorted by quality score
     """
     # Import from strategy_lab to avoid circular import at module level
-    from strategy_lab import (
+    from data_fetching import (
         fetch_price, fetch_expirations, fetch_chain,
         _get_num_from_row, _safe_int
     )
