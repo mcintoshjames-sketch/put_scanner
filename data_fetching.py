@@ -9,6 +9,7 @@ These functions include Streamlit caching decorators and provider fallback logic
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 
@@ -163,20 +164,28 @@ def effective_debit(bid, ask, last=None, alpha=0.25):
         return 1.05 * l
     return float("nan")
 
-def estimate_next_ex_div(stock, current_price):
-    """Estimate next ex-dividend date"""
+def estimate_next_ex_div(stock):
+    """
+    Heuristic: use last 2-4 historical dividend dates to estimate next ex-div date & amount.
+    Returns (date|None, amount_per_share).
+    """
     try:
         divs = stock.dividends
-        if divs.empty:
+        if divs is None or divs.empty:
             return None, 0.0
-        
-        last_div_date = divs.index[-1]
-        last_div_amount = divs.iloc[-1]
-        
-        # Estimate next date (typically quarterly)
-        next_date = last_div_date + timedelta(days=90)
-        
-        return next_date, last_div_amount
+        divs = divs.sort_index()
+        dates = list(divs.index[-4:])  # last up to 4
+        amts = list(divs.iloc[-4:])
+        if not dates:
+            return None, 0.0
+        if len(dates) >= 2:
+            gaps = [(dates[i] - dates[i-1]).days for i in range(1, len(dates))]
+            avg_gap = int(np.median(gaps)) if gaps else 90
+        else:
+            avg_gap = 90  # quarterly-ish default
+        next_date = dates[-1] + pd.Timedelta(days=avg_gap)
+        amt = float(amts[-1])
+        return next_date.date(), amt
     except Exception:
         return None, 0.0
 
