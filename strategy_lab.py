@@ -6267,6 +6267,31 @@ with tabs[6]:
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
                 
+                # Display preview status if available
+                if '_previewed_order' in st.session_state:
+                    preview_strategy = st.session_state.get('_previewed_strategy', 'Unknown')
+                    preview_hash = st.session_state.get('_previewed_order_hash', 'N/A')
+                    
+                    if preview_strategy == selected_strategy:
+                        st.success(
+                            f"📋 **Order Previewed**: Ready for submission\n\n"
+                            f"Strategy: {preview_strategy} | Hash: {preview_hash[:8]}..."
+                        )
+                    else:
+                        st.warning(
+                            f"⚠️ **Different Strategy Previewed**: You have a {preview_strategy} order previewed, "
+                            f"but selected {selected_strategy}. Preview will be cleared if you submit."
+                        )
+                    
+                    col_clear1, col_clear2 = st.columns([1, 3])
+                    with col_clear1:
+                        if st.button("🗑️ Clear Preview", help="Remove stored preview"):
+                            st.session_state.pop('_previewed_order', None)
+                            st.session_state.pop('_previewed_order_hash', None)
+                            st.session_state.pop('_previewed_strategy', None)
+                            st.session_state.pop('_preview_timestamp', None)
+                            st.rerun()
+                
                 # PRE-FLIGHT CHECK for CC: Check stock position and offer buy-write if needed
                 show_buy_write_option = False
                 buy_write_stock_price = None
@@ -6521,6 +6546,12 @@ with tabs[6]:
                                         if preview_result['status'] == 'preview_success':
                                             st.success("✅ Order preview received from Schwab!")
                                             
+                                            # STORE THE PREVIEWED ORDER in session state for later submission
+                                            st.session_state['_previewed_order'] = order
+                                            st.session_state['_previewed_order_hash'] = preview_result.get('order_hash')
+                                            st.session_state['_previewed_strategy'] = selected_strategy
+                                            st.session_state['_preview_timestamp'] = preview_result.get('preview', {}).get('timestamp', 'N/A')
+                                            
                                             # Display preview details
                                             with st.expander("📊 Schwab Preview Response", expanded=True):
                                                 preview_data = preview_result['preview']
@@ -6558,6 +6589,15 @@ with tabs[6]:
                                                     st.json(preview_data)
                                             
                                             st.caption(f"📁 Preview saved to: {preview_result['filepath']}")
+                                            
+                                            # Show info about submitting the previewed order
+                                            st.info(
+                                                "✅ **Order Ready for Submission**\n\n"
+                                                "This previewed order is now stored and ready to submit. "
+                                                "Use the 'Generate Order' button below to submit it for live trading "
+                                                "or export it for dry-run mode.\n\n"
+                                                "⏰ Preview expires in 30 minutes."
+                                            )
                                         else:
                                             st.error(f"❌ Preview failed: {preview_result.get('message', 'Unknown error')}")
                                 else:
@@ -6635,14 +6675,31 @@ with tabs[6]:
                                 if live_trading_enabled and not schwab_client:
                                     st.error("❌ Live trading enabled but Schwab client not configured. Using DRY RUN mode.")
                             
-                            # Create order based on strategy
-                            if selected_strategy == "CSP":
-                                order = trader.create_cash_secured_put_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    strike=float(selected['Strike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
+                            # Check if we have a previewed order to use
+                            use_previewed_order = False
+                            if '_previewed_order' in st.session_state and st.session_state.get('_previewed_strategy') == selected_strategy:
+                                use_previewed_order = True
+                                order = st.session_state['_previewed_order']
+                                st.success(
+                                    f"✅ Using previewed order (Hash: {st.session_state.get('_previewed_order_hash', 'N/A')[:8]}...)\n\n"
+                                    "This is the EXACT order you previewed with Schwab API."
+                                )
+                            else:
+                                if live_trading_enabled:
+                                    st.warning(
+                                        "⚠️ **No Preview Found**\n\n"
+                                        "For live trading, you should preview the order first using the 'Preview Order' button above. "
+                                        "This order will be created fresh (not previewed)."
+                                    )
+                                
+                                # Create order based on strategy (fallback if no preview)
+                                if selected_strategy == "CSP":
+                                    order = trader.create_cash_secured_put_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['Strike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
                                     duration=order_duration
                                 )
                                 strategy_type = "csp"
@@ -6703,6 +6760,18 @@ with tabs[6]:
                                 )
                                 strategy_type = "bear_call_spread"
                             
+                            # Determine strategy_type for previewed orders
+                            if use_previewed_order:
+                                strategy_type_map = {
+                                    "CSP": "csp",
+                                    "CC": "covered_call",
+                                    "COLLAR": "collar",
+                                    "IRON_CONDOR": "iron_condor",
+                                    "BULL_PUT_SPREAD": "bull_put_spread",
+                                    "BEAR_CALL_SPREAD": "bear_call_spread"
+                                }
+                                strategy_type = strategy_type_map.get(selected_strategy, "unknown")
+                            
                             # Validate order
                             validation = trader.validate_order(order)
                             
@@ -6733,6 +6802,15 @@ with tabs[6]:
                                 }
                                 
                                 result = trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
+                                
+                                # Clear the previewed order from session state after submission
+                                if use_previewed_order and result['status'] in ['exported', 'success']:
+                                    st.session_state.pop('_previewed_order', None)
+                                    st.session_state.pop('_previewed_order_hash', None)
+                                    st.session_state.pop('_previewed_strategy', None)
+                                    st.session_state.pop('_preview_timestamp', None)
+                                    if result['status'] == 'success':
+                                        st.info("✅ Previewed order was successfully submitted and cleared from cache.")
                                 
                                 if result['status'] == 'exported':
                                     # Now create the profit-taking exit order
