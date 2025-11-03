@@ -6841,7 +6841,7 @@ with tabs[6]:
                                             "exit_price": exit_price,
                                             "profit_per_contract": (entry_premium - exit_price) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "CC":
                                         # Exit: Buy to close at target price
@@ -6866,7 +6866,7 @@ with tabs[6]:
                                             "exit_price": exit_price,
                                             "profit_per_contract": (entry_premium - exit_price) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "COLLAR":
                                         # Exit: Close both legs (BTC call, STC put)
@@ -6918,8 +6918,8 @@ with tabs[6]:
                                         }
                                         
                                         # Submit both exit orders
-                                        exit_result_call = trader.submit_order(exit_order_call, strategy_type=f"{strategy_type}_exit_call", metadata=exit_metadata_call)
-                                        exit_result_put = trader.submit_order(exit_order_put, strategy_type=f"{strategy_type}_exit_put", metadata=exit_metadata_put)
+                                        exit_result_call = trader.submit_order(exit_order_call, strategy_type=f"{strategy_type}_exit_call", metadata=exit_metadata_call, skip_preview_check=True)
+                                        exit_result_put = trader.submit_order(exit_order_put, strategy_type=f"{strategy_type}_exit_put", metadata=exit_metadata_put, skip_preview_check=True)
                                         exit_result = {"call": exit_result_call, "put": exit_result_put}
                                     
                                     elif selected_strategy == "IRON_CONDOR":
@@ -6945,7 +6945,7 @@ with tabs[6]:
                                             "exit_debit": exit_debit,
                                             "profit_per_contract": (entry_credit - exit_debit) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "BULL_PUT_SPREAD":
                                         # Exit: Close entire spread (both legs) as net debit
@@ -6968,7 +6968,7 @@ with tabs[6]:
                                             "exit_debit": exit_debit,
                                             "profit_per_contract": (entry_credit - exit_debit) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "BEAR_CALL_SPREAD":
                                         # Exit: Close entire spread (both legs) as net debit
@@ -6991,7 +6991,7 @@ with tabs[6]:
                                             "exit_debit": exit_debit,
                                             "profit_per_contract": (entry_credit - exit_debit) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata)
+                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     # Generate stop-loss orders if requested
                                     stop_loss_result = None
@@ -7021,7 +7021,7 @@ with tabs[6]:
                                                 "stop_loss_price": stop_loss_price,
                                                 "max_loss_per_contract": max_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                         
                                         elif selected_strategy == "CC":
                                             # Risk: Close if option value reaches 2x entry premium
@@ -7048,7 +7048,7 @@ with tabs[6]:
                                                 "stop_loss_price": stop_loss_price,
                                                 "max_loss_per_contract": max_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                         
                                         elif selected_strategy == "IRON_CONDOR":
                                             # Risk: Close if total spread cost reaches 2x entry credit
@@ -7075,7 +7075,7 @@ with tabs[6]:
                                                 "stop_loss_debit": stop_loss_debit,
                                                 "max_loss_per_contract": max_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                         
                                         elif selected_strategy == "BULL_PUT_SPREAD":
                                             # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
@@ -7100,7 +7100,7 @@ with tabs[6]:
                                                 "stop_loss_debit": stop_loss_debit,
                                                 "max_loss_per_contract": max_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                         
                                         elif selected_strategy == "BEAR_CALL_SPREAD":
                                             # Risk: Close if total spread cost reaches 2x entry credit
@@ -7125,7 +7125,7 @@ with tabs[6]:
                                                 "stop_loss_debit": stop_loss_debit,
                                                 "max_loss_per_contract": max_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata)
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                         
                                         elif selected_strategy == "COLLAR":
                                             # Risk: Close call if it reaches 2x entry premium
@@ -7151,7 +7151,7 @@ with tabs[6]:
                                                 "entry_premium": call_entry,
                                                 "stop_loss_price": call_stop_loss
                                             }
-                                            stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call)
+                                            stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
                                     
                                     # Display success message and files
                                     order_count = 2 if not generate_stop_loss else 3

@@ -1325,7 +1325,8 @@ class SchwabTrader:
         order: Dict[str, Any],
         strategy_type: str = "option",
         metadata: Optional[Dict[str, Any]] = None,
-        account_id: Optional[str] = None
+        account_id: Optional[str] = None,
+        skip_preview_check: bool = False
     ) -> Dict[str, Any]:
         """
         Submit order to Schwab API or export to file in dry-run mode.
@@ -1338,6 +1339,7 @@ class SchwabTrader:
             strategy_type: Type of strategy
             metadata: Additional metadata
             account_id: Account hash value (uses self.account_id if not provided)
+            skip_preview_check: If True, bypass preview requirement (for exit/stop-loss orders)
         
         Returns:
             Response dictionary with status and details
@@ -1357,8 +1359,8 @@ class SchwabTrader:
         
         # LIVE TRADING MODE - Enforce safety checks
         
-        # Safety Check 1: Order must be previewed first
-        if not self._is_previewed(order):
+        # Safety Check 1: Order must be previewed first (unless explicitly skipped)
+        if not skip_preview_check and not self._is_previewed(order):
             order_hash = self._compute_order_hash(order)
             raise RuntimeError(
                 "SAFETY CHECK FAILED: Order must be previewed before execution.\n"
