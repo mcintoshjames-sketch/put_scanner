@@ -6700,65 +6700,65 @@ with tabs[6]:
                                         strike=float(selected['Strike']),
                                         quantity=int(num_contracts),
                                         limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "csp"
-                            elif selected_strategy == "CC":
-                                order = trader.create_covered_call_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    strike=float(selected['Strike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "covered_call"
-                            elif selected_strategy == "COLLAR":
-                                order = trader.create_collar_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    call_strike=float(selected['CallStrike']),
-                                    put_strike=float(selected['PutStrike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "collar"
-                            elif selected_strategy == "IRON_CONDOR":
-                                order = trader.create_iron_condor_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    long_put_strike=float(selected['PutLongStrike']),
-                                    short_put_strike=float(selected['PutShortStrike']),
-                                    short_call_strike=float(selected['CallShortStrike']),
-                                    long_call_strike=float(selected['CallLongStrike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "iron_condor"
-                            elif selected_strategy == "BULL_PUT_SPREAD":
-                                order = trader.create_bull_put_spread_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    sell_strike=float(selected['SellStrike']),
-                                    buy_strike=float(selected['BuyStrike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "bull_put_spread"
-                            elif selected_strategy == "BEAR_CALL_SPREAD":
-                                order = trader.create_bear_call_spread_order(
-                                    symbol=selected['Ticker'],
-                                    expiration=selected['Exp'],
-                                    sell_strike=float(selected['SellStrike']),
-                                    buy_strike=float(selected['BuyStrike']),
-                                    quantity=int(num_contracts),
-                                    limit_price=float(limit_price),
-                                    duration=order_duration
-                                )
-                                strategy_type = "bear_call_spread"
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "csp"
+                                elif selected_strategy == "CC":
+                                    order = trader.create_covered_call_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        strike=float(selected['Strike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "covered_call"
+                                elif selected_strategy == "COLLAR":
+                                    order = trader.create_collar_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        call_strike=float(selected['CallStrike']),
+                                        put_strike=float(selected['PutStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "collar"
+                                elif selected_strategy == "IRON_CONDOR":
+                                    order = trader.create_iron_condor_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        long_put_strike=float(selected['PutLongStrike']),
+                                        short_put_strike=float(selected['PutShortStrike']),
+                                        short_call_strike=float(selected['CallShortStrike']),
+                                        long_call_strike=float(selected['CallLongStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "iron_condor"
+                                elif selected_strategy == "BULL_PUT_SPREAD":
+                                    order = trader.create_bull_put_spread_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "bull_put_spread"
+                                elif selected_strategy == "BEAR_CALL_SPREAD":
+                                    order = trader.create_bear_call_spread_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=float(limit_price),
+                                        duration=order_duration
+                                    )
+                                    strategy_type = "bear_call_spread"
                             
                             # Determine strategy_type for previewed orders
                             if use_previewed_order:
