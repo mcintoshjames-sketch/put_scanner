@@ -6073,7 +6073,6 @@ with tabs[6]:
                                 f"• This covers the maximum loss if assigned at the strike price\n"
                                 f"• The app will verify your buying power before submitting to Schwab"
                             )
-                            st.metric("Net Credit", f"${selected['NetCredit']:.2f}")
                         elif selected_strategy == "BULL_PUT_SPREAD":
                             st.write("**Bull Put Spread (2-leg):**")
                             col_s1, col_s2 = st.columns(2)
