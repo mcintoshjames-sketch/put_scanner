@@ -6299,8 +6299,7 @@ with tabs[6]:
                                         try:
                                             position_check = trader.check_stock_position(
                                                 symbol=selected['Ticker'],
-                                                required_shares=required_shares,
-                                                account_id=selected_account_id
+                                                required_shares=required_shares
                                             )
                                             
                                             if not position_check['hasSufficientShares']:
@@ -6377,8 +6376,7 @@ with tabs[6]:
                                         required_bp = float(selected['Strike']) * 100 * int(num_contracts)
                                         try:
                                             bp_check = trader.check_buying_power(
-                                                required_amount=required_bp,
-                                                account_id=selected_account_id
+                                                required_amount=required_bp
                                             )
                                             
                                             if not bp_check['hasSufficientFunds']:
