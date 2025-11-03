@@ -101,15 +101,28 @@ def fetch_chain(ticker, expiration):
     
     return df
 
-def _get_num_from_row(row, col):
-    """Safely extract numeric value from DataFrame row"""
+def _safe_float(x, default=float("nan")):
+    """Safely convert value to float with default"""
     try:
-        val = row[col]
-        if pd.isna(val):
-            return 0.0
-        return float(val)
-    except (KeyError, ValueError, TypeError):
-        return 0.0
+        return float(x)
+    except Exception:
+        return default
+
+
+def _get_num_from_row(r: pd.Series, keys: list, default=float("nan")) -> float:
+    """Try multiple key names from a row/Series and return numeric value."""
+    for k in keys:
+        try:
+            if hasattr(r, "get"):
+                v = r.get(k, None)
+            else:
+                v = r[k]
+        except Exception:
+            v = None
+        f = _safe_float(v, default)
+        if f == f:  # not NaN
+            return f
+    return default
 
 def _safe_int(val):
     """Safely convert value to int"""
@@ -121,12 +134,12 @@ def _safe_int(val):
         return 0
 
 def effective_credit(row):
-    """Calculate effective credit from bid/ask"""
-    return (_get_num_from_row(row, 'bid') + _get_num_from_row(row, 'ask')) / 2.0
+    """Calculate effective credit as midpoint of bid/ask"""
+    return (_get_num_from_row(row, ['bid', 'Bid'], 0.0) + _get_num_from_row(row, ['ask', 'Ask'], 0.0)) / 2.0
 
 def effective_debit(row):
-    """Calculate effective debit from bid/ask"""
-    return (_get_num_from_row(row, 'ask') + _get_num_from_row(row, 'bid')) / 2.0
+    """Calculate effective debit as midpoint of ask/bid"""
+    return (_get_num_from_row(row, ['ask', 'Ask'], 0.0) + _get_num_from_row(row, ['bid', 'Bid'], 0.0)) / 2.0
 
 def estimate_next_ex_div(stock, current_price):
     """Estimate next ex-dividend date"""
