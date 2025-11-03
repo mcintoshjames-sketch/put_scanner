@@ -133,13 +133,34 @@ def _safe_int(val):
     except (ValueError, TypeError):
         return 0
 
-def effective_credit(row):
-    """Calculate effective credit as midpoint of bid/ask"""
-    return (_get_num_from_row(row, ['bid', 'Bid'], 0.0) + _get_num_from_row(row, ['ask', 'Ask'], 0.0)) / 2.0
+def effective_credit(bid, ask, last=None, alpha=0.25):
+    """
+    Realistic credit for SELL orders: bid + alpha*(ask-bid).
+    alpha ~ 0.25 for liquid names; falls back to 0.95*last if no quotes.
+    """
+    b = _safe_float(bid)
+    a = _safe_float(ask)
+    l = _safe_float(last, 0.0)
+    if b == b and a == a and b > 0 and a > 0 and a >= b:
+        return b + alpha * (a - b)
+    if l == l and l > 0:
+        return 0.95 * l
+    return float("nan")
 
-def effective_debit(row):
-    """Calculate effective debit as midpoint of ask/bid"""
-    return (_get_num_from_row(row, ['ask', 'Ask'], 0.0) + _get_num_from_row(row, ['bid', 'Bid'], 0.0)) / 2.0
+
+def effective_debit(bid, ask, last=None, alpha=0.25):
+    """
+    Realistic debit for BUY orders: ask - alpha*(ask-bid).
+    Falls back to 1.05*last if no quotes.
+    """
+    b = _safe_float(bid)
+    a = _safe_float(ask)
+    l = _safe_float(last, 0.0)
+    if b == b and a == a and b > 0 and a > 0 and a >= b:
+        return a - alpha * (a - b)
+    if l == l and l > 0:
+        return 1.05 * l
+    return float("nan")
 
 def estimate_next_ex_div(stock, current_price):
     """Estimate next ex-dividend date"""
