@@ -124,14 +124,15 @@ def _get_num_from_row(r: pd.Series, keys: list, default=float("nan")) -> float:
             return f
     return default
 
-def _safe_int(val):
-    """Safely convert value to int"""
+def _safe_int(x, default=0):
+    """Safely convert value to int with default"""
     try:
-        if pd.isna(val):
-            return 0
-        return int(val)
-    except (ValueError, TypeError):
-        return 0
+        f = float(x)
+        if f != f:  # NaN
+            return default
+        return int(f)
+    except Exception:
+        return default
 
 def effective_credit(bid, ask, last=None, alpha=0.25):
     """
