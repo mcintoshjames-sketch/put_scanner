@@ -3170,7 +3170,15 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
 
     days = int(_series_get(row, "Days", 0))
     spread = float(_series_get(row, "Spread%", float("nan")))
-    oi = int(_safe_int(_series_get(row, "OI", 0)))
+    
+    # For multi-leg strategies, get OI from appropriate columns
+    if strategy == "COLLAR":
+        call_oi = int(_safe_int(_series_get(row, "CallOI", 0)))
+        put_oi = int(_safe_int(_series_get(row, "PutOI", 0)))
+        oi = min(call_oi, put_oi)  # Use worst case for liquidity check
+    else:
+        oi = int(_safe_int(_series_get(row, "OI", 0)))
+    
     roi_ann = float(_series_get(row, "ROI%_ann", float("nan"))) / 100.0
     excess = float(_series_get(row, "ROI%_excess_bills", float("nan"))) / 100.0
     otm_pct = float(_series_get(row, "OTM%", float("nan")))
