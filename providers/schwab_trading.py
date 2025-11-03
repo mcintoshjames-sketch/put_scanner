@@ -830,6 +830,70 @@ class SchwabTrader:
         
         return order
     
+    def create_collar_exit_order(
+        self,
+        symbol: str,
+        expiration: str,
+        call_strike: float,
+        put_strike: float,
+        quantity: int,
+        limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a collar exit order (close both legs atomically).
+        This is a 2-leg order: BUY_TO_CLOSE call, SELL_TO_CLOSE put.
+        
+        Args:
+            symbol: Underlying stock symbol
+            expiration: Option expiration date (YYYY-MM-DD)
+            call_strike: Strike price for short call to close
+            put_strike: Strike price for long put to close
+            quantity: Number of contracts
+            limit_price: Net credit/debit limit for closing (negative = debit to close, positive = credit)
+            duration: Order duration
+        
+        Returns:
+            Order payload dictionary
+        """
+        # Format expiration date
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        
+        # Build option symbols
+        call_symbol = f"{symbol_padded}{exp_str}C{int(call_strike * 1000):08d}"
+        put_symbol = f"{symbol_padded}{exp_str}P{int(put_strike * 1000):08d}"
+        
+        # Build multi-leg exit order
+        order = {
+            "orderType": "NET_CREDIT" if limit_price >= 0 else "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": abs(limit_price),
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": call_symbol,
+                        "assetType": "OPTION"
+                    }
+                },
+                {
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": quantity,
+                    "instrument": {
+                        "symbol": put_symbol,
+                        "assetType": "OPTION"
+                    }
+                }
+            ]
+        }
+        
+        return order
+    
     def create_iron_condor_order(
         self,
         symbol: str,

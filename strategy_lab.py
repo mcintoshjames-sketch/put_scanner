@@ -6876,136 +6876,118 @@ with tabs[6]:
                                         }
                                         exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
-                                    elif selected_strategy == "COLLAR":
-                                        # Exit: Close both legs (BTC call, STC put)
-                                        call_entry = float(selected.get('CallPrem', 0))
-                                        call_exit = max(0.05, call_entry * (1.0 - profit_capture_decimal))
-                                        
-                                        # Create exit for call (BUY TO CLOSE)
-                                        exit_order_call = trader.create_option_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            strike=float(selected['CallStrike']),
-                                            option_type="CALL",
-                                            action="BUY_TO_CLOSE",
-                                            quantity=int(num_contracts),
-                                            order_type="LIMIT",
-                                            limit_price=call_exit,
-                                            duration="GTC"
-                                        )
-                                        
-                                        # Create exit for put (SELL TO CLOSE)
-                                        put_entry = float(selected.get('PutPrem', 0))
-                                        put_exit = put_entry * 0.5  # Close put at ~50% of cost
-                                        
-                                        exit_order_put = trader.create_option_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            strike=float(selected['PutStrike']),
-                                            option_type="PUT",
-                                            action="SELL_TO_CLOSE",
-                                            quantity=int(num_contracts),
-                                            order_type="LIMIT",
-                                            limit_price=put_exit,
-                                            duration="GTC"
-                                        )
-                                        
-                                        exit_metadata_call = {
-                                            **metadata,
-                                            "exit_trigger": f"{profit_capture_pct}% call profit capture",
-                                            "leg": "CALL",
-                                            "entry_premium": call_entry,
-                                            "exit_price": call_exit
-                                        }
-                                        exit_metadata_put = {
-                                            **metadata,
-                                            "exit_trigger": "close protective put",
-                                            "leg": "PUT",
-                                            "entry_cost": put_entry,
-                                            "exit_price": put_exit
-                                        }
-                                        
-                                        # Submit both exit orders
-                                        exit_result_call = trader.submit_order(exit_order_call, strategy_type=f"{strategy_type}_exit_call", metadata=exit_metadata_call, skip_preview_check=True)
-                                        exit_result_put = trader.submit_order(exit_order_put, strategy_type=f"{strategy_type}_exit_put", metadata=exit_metadata_put, skip_preview_check=True)
-                                        exit_result = {"call": exit_result_call, "put": exit_result_put}
+                                elif selected_strategy == "COLLAR":
+                                    # Exit: Close both legs atomically
+                                    call_entry = float(selected.get('CallPrem', 0))
+                                    put_entry = float(selected.get('PutPrem', 0))
                                     
-                                    elif selected_strategy == "IRON_CONDOR":
-                                        # Exit: Close entire spread (all 4 legs) as net debit
-                                        entry_credit = float(selected['NetCredit'])
-                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
-                                        
-                                        exit_order = trader.create_iron_condor_exit_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            long_put_strike=float(selected['PutLongStrike']),
-                                            short_put_strike=float(selected['PutShortStrike']),
-                                            short_call_strike=float(selected['CallShortStrike']),
-                                            long_call_strike=float(selected['CallLongStrike']),
-                                            quantity=int(num_contracts),
-                                            limit_price=exit_debit,
-                                            duration="GTC"
-                                        )
-                                        exit_metadata = {
-                                            **metadata,
-                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                            "entry_credit": entry_credit,
-                                            "exit_debit": exit_debit,
-                                            "profit_per_contract": (entry_credit - exit_debit) * 100
-                                        }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    # Calculate target exit prices
+                                    call_exit = max(0.05, call_entry * (1.0 - profit_capture_decimal))
+                                    put_exit = put_entry * 0.5  # Close put at ~50% of cost
                                     
-                                    elif selected_strategy == "BULL_PUT_SPREAD":
-                                        # Exit: Close entire spread (both legs) as net debit
-                                        entry_credit = float(selected['NetCredit'])
-                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
-                                        
-                                        exit_order = trader.create_bull_put_spread_exit_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            sell_strike=float(selected['SellStrike']),
-                                            buy_strike=float(selected['BuyStrike']),
-                                            quantity=int(num_contracts),
-                                            limit_price=exit_debit,
-                                            duration="GTC"
-                                        )
-                                        exit_metadata = {
-                                            **metadata,
-                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                            "entry_credit": entry_credit,
-                                            "exit_debit": exit_debit,
-                                            "profit_per_contract": (entry_credit - exit_debit) * 100
-                                        }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    # Net exit: paying call_exit to close call, receiving put_exit for put
+                                    # Net = put_exit - call_exit (negative = we pay net debit)
+                                    net_exit = put_exit - call_exit
                                     
-                                    elif selected_strategy == "BEAR_CALL_SPREAD":
-                                        # Exit: Close entire spread (both legs) as net debit
-                                        entry_credit = float(selected['NetCredit'])
-                                        exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
-                                        
-                                        exit_order = trader.create_bear_call_spread_exit_order(
-                                            symbol=selected['Ticker'],
-                                            expiration=selected['Exp'],
-                                            sell_strike=float(selected['SellStrike']),
-                                            buy_strike=float(selected['BuyStrike']),
-                                            quantity=int(num_contracts),
-                                            limit_price=exit_debit,
-                                            duration="GTC"
-                                        )
-                                        exit_metadata = {
-                                            **metadata,
-                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                            "entry_credit": entry_credit,
-                                            "exit_debit": exit_debit,
-                                            "profit_per_contract": (entry_credit - exit_debit) * 100
-                                        }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    # Create atomic multi-leg exit order
+                                    exit_order = trader.create_collar_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        call_strike=float(selected['CallStrike']),
+                                        put_strike=float(selected['PutStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=net_exit,
+                                        duration="GTC"
+                                    )
                                     
-                                    # Generate stop-loss orders if requested
-                                    stop_loss_order = None
-                                    stop_loss_order_call = None
-                                    stop_loss_result = None
-                                    if generate_stop_loss:
+                                    exit_metadata = {
+                                        **metadata,
+                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                        "call_entry_premium": call_entry,
+                                        "call_exit_price": call_exit,
+                                        "put_entry_cost": put_entry,
+                                        "put_exit_price": put_exit,
+                                        "net_exit": net_exit
+                                    }
+                                    
+                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    
+                                elif selected_strategy == "IRON_CONDOR":
+                                    # Exit: Close entire spread (all 4 legs) as net debit
+                                    entry_credit = float(selected['NetCredit'])
+                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    
+                                    exit_order = trader.create_iron_condor_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        long_put_strike=float(selected['PutLongStrike']),
+                                        short_put_strike=float(selected['PutShortStrike']),
+                                        short_call_strike=float(selected['CallShortStrike']),
+                                        long_call_strike=float(selected['CallLongStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=exit_debit,
+                                        duration="GTC"
+                                    )
+                                    exit_metadata = {
+                                        **metadata,
+                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                        "entry_credit": entry_credit,
+                                        "exit_debit": exit_debit,
+                                        "profit_per_contract": (entry_credit - exit_debit) * 100
+                                    }
+                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    
+                                elif selected_strategy == "BULL_PUT_SPREAD":
+                                    # Exit: Close entire spread (both legs) as net debit
+                                    entry_credit = float(selected['NetCredit'])
+                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    
+                                    exit_order = trader.create_bull_put_spread_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=exit_debit,
+                                        duration="GTC"
+                                    )
+                                    exit_metadata = {
+                                        **metadata,
+                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                        "entry_credit": entry_credit,
+                                        "exit_debit": exit_debit,
+                                        "profit_per_contract": (entry_credit - exit_debit) * 100
+                                    }
+                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    
+                                elif selected_strategy == "BEAR_CALL_SPREAD":
+                                    # Exit: Close entire spread (both legs) as net debit
+                                    entry_credit = float(selected['NetCredit'])
+                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    
+                                    exit_order = trader.create_bear_call_spread_exit_order(
+                                        symbol=selected['Ticker'],
+                                        expiration=selected['Exp'],
+                                        sell_strike=float(selected['SellStrike']),
+                                        buy_strike=float(selected['BuyStrike']),
+                                        quantity=int(num_contracts),
+                                        limit_price=exit_debit,
+                                        duration="GTC"
+                                    )
+                                    exit_metadata = {
+                                        **metadata,
+                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                        "entry_credit": entry_credit,
+                                        "exit_debit": exit_debit,
+                                        "profit_per_contract": (entry_credit - exit_debit) * 100
+                                    }
+                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    
+                                # Generate stop-loss orders if requested
+                                stop_loss_order = None
+                                stop_loss_order_call = None
+                                stop_loss_result = None
+                                if generate_stop_loss:
                                         if selected_strategy == "CSP":
                                             # Risk: Close if option value reaches 2x entry premium (doubled loss)
                                             entry_premium = float(selected['Premium'])
@@ -7163,31 +7145,29 @@ with tabs[6]:
                                             }
                                             stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
                                     
-                                    # Display success message and files
-                                    order_count = 2 if not generate_stop_loss else 3
-                                    
-                                    # Store orders in session state for persistence across reruns
-                                    st.session_state.generated_orders = {
-                                        'entry_order': order,
-                                        'entry_result': result,
-                                        'exit_order': exit_order,
-                                        'exit_result': exit_result,
-                                        'stop_loss_order': stop_loss_order if generate_stop_loss else None,
-                                        'stop_loss_result': stop_loss_result if generate_stop_loss else None,
-                                        'generate_stop_loss': generate_stop_loss,
-                                        'profit_capture_pct': profit_capture_pct,
-                                        'risk_multiplier': risk_multiplier if generate_stop_loss else None,
-                                        'strategy_type': strategy_type,
-                                        'selected_strategy': selected_strategy,
-                                        # Store collar-specific orders if needed
-                                        'exit_order_call': exit_order_call if selected_strategy == "COLLAR" else None,
-                                        'exit_order_put': exit_order_put if selected_strategy == "COLLAR" else None,
-                                        'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
-                                    }
-                                    
-                                    st.success(f"✅ {order_count} order files generated successfully!")
+                                # Display success message and files
+                                order_count = 2 if not generate_stop_loss else 3
+                                
+                                # Store orders in session state for persistence across reruns
+                                st.session_state.generated_orders = {
+                                    'entry_order': order,
+                                    'entry_result': result,
+                                    'exit_order': exit_order,
+                                    'exit_result': exit_result,
+                                    'stop_loss_order': stop_loss_order if generate_stop_loss else None,
+                                    'stop_loss_result': stop_loss_result if generate_stop_loss else None,
+                                    'generate_stop_loss': generate_stop_loss,
+                                    'profit_capture_pct': profit_capture_pct,
+                                    'risk_multiplier': risk_multiplier if generate_stop_loss else None,
+                                    'strategy_type': strategy_type,
+                                    'selected_strategy': selected_strategy,
+                                    # Store collar-specific stop-loss if needed
+                                    'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
+                                }
+                                
+                                st.success(f"✅ {order_count} order files generated successfully!")
                                 else:
-                                    st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
+                                st.error(f"❌ Failed to export order: {result.get('message', 'Unknown error')}")
                         
                         except Exception as e:
                             st.error(f"❌ Error generating order: {str(e)}")
@@ -7199,44 +7179,42 @@ with tabs[6]:
                 if st.session_state.generated_orders is not None:
                     from providers.schwab_trading import format_order_summary
                     
-                    orders_data = st.session_state.generated_orders
-                    order = orders_data['entry_order']
-                    result = orders_data['entry_result']
-                    exit_order = orders_data['exit_order']
-                    exit_result = orders_data['exit_result']
-                    stop_loss_order = orders_data['stop_loss_order']
-                    stop_loss_result = orders_data['stop_loss_result']
-                    generate_stop_loss = orders_data['generate_stop_loss']
-                    profit_capture_pct = orders_data['profit_capture_pct']
-                    risk_multiplier = orders_data['risk_multiplier']
-                    selected_strategy = orders_data['selected_strategy']
+                orders_data = st.session_state.generated_orders
+                order = orders_data['entry_order']
+                result = orders_data['entry_result']
+                exit_order = orders_data['exit_order']
+                exit_result = orders_data['exit_result']
+                stop_loss_order = orders_data['stop_loss_order']
+                stop_loss_result = orders_data['stop_loss_result']
+                generate_stop_loss = orders_data['generate_stop_loss']
+                profit_capture_pct = orders_data['profit_capture_pct']
+                risk_multiplier = orders_data['risk_multiplier']
+                selected_strategy = orders_data['selected_strategy']
+                
+                # Collar-specific stop-loss order
+                stop_loss_order_call = orders_data.get('stop_loss_order_call')
+                
+                st.divider()
+                st.subheader("📋 Generated Orders")
+                
+                # Create columns based on whether stop-loss is included
+                if generate_stop_loss:
+                    col_entry, col_exit, col_stop = st.columns(3)
+                else:
+                    col_entry, col_exit = st.columns(2)
+                    col_stop = None
+                
+                with col_entry:
+                    st.write("**📤 ENTRY Order**")
+                    st.code(result['filepath'], language=None)
                     
-                    # Collar-specific orders
-                    exit_order_call = orders_data.get('exit_order_call')
-                    exit_order_put = orders_data.get('exit_order_put')
-                    stop_loss_order_call = orders_data.get('stop_loss_order_call')
+                    # Show order summary
+                    with st.expander("📄 Entry Order Details"):
+                        st.text(format_order_summary(order))
+                        st.json(order)
                     
-                    st.divider()
-                    st.subheader("📋 Generated Orders")
-                    
-                    # Create columns based on whether stop-loss is included
-                    if generate_stop_loss:
-                        col_entry, col_exit, col_stop = st.columns(3)
-                    else:
-                        col_entry, col_exit = st.columns(2)
-                        col_stop = None
-                    
-                    with col_entry:
-                        st.write("**📤 ENTRY Order**")
-                        st.code(result['filepath'], language=None)
-                        
-                        # Show order summary
-                        with st.expander("📄 Entry Order Details"):
-                            st.text(format_order_summary(order))
-                            st.json(order)
-                        
-                        # Check for preview result in session state
-                        if 'preview_entry' in st.session_state.preview_results:
+                    # Check for preview result in session state
+                    if 'preview_entry' in st.session_state.preview_results:
                             preview_result = st.session_state.preview_results['preview_entry']
                             st.success("✅ Entry order preview received!")
                             with st.expander("📊 Preview Details", expanded=True):
@@ -7251,13 +7229,13 @@ with tabs[6]:
                                     if 'marginRequirement' in preview_data:
                                         st.metric("Margin Requirement", f"${preview_data['marginRequirement']:.2f}")
                                     st.json(preview_data)
-                                else:
-                                    st.json(preview_data)
-                        
-                        # Preview and download buttons
-                        col_preview_entry, col_dl_entry = st.columns(2)
-                        
-                        with col_preview_entry:
+                            else:
+                                st.json(preview_data)
+                    
+                    # Preview and download buttons
+                    col_preview_entry, col_dl_entry = st.columns(2)
+                    
+                    with col_preview_entry:
                             if st.button("🔍 Preview", key="preview_entry_btn", use_container_width=True):
                                 try:
                                     from providers.schwab_trading import SchwabTrader
@@ -7297,135 +7275,15 @@ with tabs[6]:
                     
                     with col_exit:
                         if exit_result:
-                            if isinstance(exit_result, dict) and 'call' in exit_result:
-                                # Collar has multiple exit orders
-                                st.write("**📥 EXIT Orders (Collar)**")
-                                st.code(exit_result['call']['filepath'], language=None)
-                                st.code(exit_result['put']['filepath'], language=None)
-                                
-                                with st.expander("📄 Exit Orders Details"):
-                                    st.write("**Call Exit:**")
-                                    st.json(exit_order_call)
-                                    st.write("**Put Exit:**")
-                                    st.json(exit_order_put)
-                                
-                                # Preview results for call
-                                if 'preview_exit_call' in st.session_state.preview_results:
-                                    preview_result = st.session_state.preview_results['preview_exit_call']
-                                    st.success("✅ Call exit preview received!")
-                                    with st.expander("📊 Call Preview", expanded=True):
-                                        preview_data = preview_result['preview']
-                                        if isinstance(preview_data, dict):
-                                            if 'commission' in preview_data:
-                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                            if 'estimatedTotalAmount' in preview_data:
-                                                st.metric("Est. Cost", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                            st.json(preview_data)
-                                        else:
-                                            st.json(preview_data)
-                                
-                                # Preview and download for call exit
-                                col_preview_call, col_dl_call = st.columns(2)
-                                with col_preview_call:
-                                    if st.button("🔍 Preview Call", key="preview_exit_call_btn", use_container_width=True):
-                                        try:
-                                            from providers.schwab_trading import SchwabTrader
-                                            from providers.schwab import SchwabClient
-                                            
-                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                if schwab_client:
-                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                    with st.spinner("Previewing call exit..."):
-                                                        preview_result = trader.preview_order(exit_order_call)
-                                                    
-                                                    if preview_result['status'] == 'preview_success':
-                                                        st.session_state.preview_results['preview_exit_call'] = preview_result
-                                                        st.rerun()
-                                                    else:
-                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
-                                                else:
-                                                    st.error("Schwab client not available")
-                                            else:
-                                                st.error("Schwab provider not active")
-                                        except Exception as e:
-                                            st.error(f"Error: {str(e)}")
-                                
-                                with col_dl_call:
-                                    with open(exit_result['call']['filepath'], 'r') as f:
-                                        exit_call_json = f.read()
-                                    st.download_button(
-                                        label="⬇️ Download",
-                                        data=exit_call_json,
-                                        file_name=exit_result['call']['filepath'].split('/')[-1],
-                                        mime="application/json",
-                                        key="download_exit_call_btn",
-                                        use_container_width=True
-                                    )
-                                
-                                # Preview results for put
-                                if 'preview_exit_put' in st.session_state.preview_results:
-                                    preview_result = st.session_state.preview_results['preview_exit_put']
-                                    st.success("✅ Put exit preview received!")
-                                    with st.expander("📊 Put Preview", expanded=True):
-                                        preview_data = preview_result['preview']
-                                        if isinstance(preview_data, dict):
-                                            if 'commission' in preview_data:
-                                                st.metric("Commission", f"${preview_data['commission']:.2f}")
-                                            if 'estimatedTotalAmount' in preview_data:
-                                                st.metric("Est. Credit", f"${preview_data['estimatedTotalAmount']:.2f}")
-                                            st.json(preview_data)
-                                        else:
-                                            st.json(preview_data)
-                                
-                                # Preview and download for put exit
-                                col_preview_put, col_dl_put = st.columns(2)
-                                with col_preview_put:
-                                    if st.button("🔍 Preview Put", key="preview_exit_put_btn", use_container_width=True):
-                                        try:
-                                            from providers.schwab_trading import SchwabTrader
-                                            from providers.schwab import SchwabClient
-                                            
-                                            if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
-                                                schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
-                                                if schwab_client:
-                                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
-                                                    with st.spinner("Previewing put exit..."):
-                                                        preview_result = trader.preview_order(exit_order_put)
-                                                    
-                                                    if preview_result['status'] == 'preview_success':
-                                                        st.session_state.preview_results['preview_exit_put'] = preview_result
-                                                        st.rerun()
-                                                    else:
-                                                        st.error(f"Preview failed: {preview_result.get('message', 'Unknown')}")
-                                                else:
-                                                    st.error("Schwab client not available")
-                                            else:
-                                                st.error("Schwab provider not active")
-                                        except Exception as e:
-                                            st.error(f"Error: {str(e)}")
-                                
-                                with col_dl_put:
-                                    with open(exit_result['put']['filepath'], 'r') as f:
-                                        exit_put_json = f.read()
-                                    st.download_button(
-                                        label="⬇️ Download",
-                                        data=exit_put_json,
-                                        file_name=exit_result['put']['filepath'].split('/')[-1],
-                                        mime="application/json",
-                                        key="download_exit_put_btn",
-                                        use_container_width=True
-                                    )
-                            else:
-                                # Single exit order
-                                st.write(f"**📥 EXIT Order ({profit_capture_pct}% profit target)**")
-                                st.code(exit_result['filepath'], language=None)
-                                
-                                with st.expander("📄 Exit Order Details"):
-                                    st.text(format_order_summary(exit_order))
-                                    st.json(exit_order)
-                                
-                                # Check for preview result
+                            # Single exit order (includes COLLAR atomic exit)
+                            st.write(f"**📥 EXIT Order ({profit_capture_pct}% profit target)**")
+                            st.code(exit_result['filepath'], language=None)
+                            
+                            with st.expander("📄 Exit Order Details"):
+                                st.text(format_order_summary(exit_order))
+                                st.json(exit_order)
+                            
+                            # Check for preview result
                                 if 'preview_exit' in st.session_state.preview_results:
                                     preview_result = st.session_state.preview_results['preview_exit']
                                     st.success("✅ Exit order preview received!")
