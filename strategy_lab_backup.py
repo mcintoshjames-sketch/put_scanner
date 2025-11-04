@@ -1164,7 +1164,7 @@ with tabs[0]:
         show_cols = ["Strategy","Ticker","Price","Exp","Days","Strike","Premium","OTM%","ROI%_ann",
                      "IV","POEW","CushionSigma","Spread%","OI","Collateral","Score"]
         show_cols = [c for c in show_cols if c in df_csp.columns]
-        st.dataframe(df_csp[show_cols], use_container_width=True, height=520)
+        st.dataframe(df_csp[show_cols], width='stretch', height=520)
 
 # --- Tab 2: CC ---
 with tabs[1]:
@@ -1175,7 +1175,7 @@ with tabs[1]:
         show_cols = ["Strategy","Ticker","Price","Exp","Days","Strike","Premium","OTM%","ROI%_ann",
                      "IV","POEC","CushionSigma","Spread%","OI","Capital","DivYld%","Score"]
         show_cols = [c for c in show_cols if c in df_cc.columns]
-        st.dataframe(df_cc[show_cols], use_container_width=True, height=520)
+        st.dataframe(df_cc[show_cols], width='stretch', height=520)
 
 # --- Tab 3: Collars ---
 with tabs[2]:
@@ -1188,7 +1188,7 @@ with tabs[2]:
                      "ROI%_ann","CallΔ","PutΔ","CallSpread%","PutSpread%","CallOI","PutOI",
                      "Floor$/sh","Cap$/sh","PutCushionσ","CallCushionσ","Score"]
         show_cols = [c for c in show_cols if c in df_collar.columns]
-        st.dataframe(df_collar[show_cols], use_container_width=True, height=520)
+        st.dataframe(df_collar[show_cols], width='stretch', height=520)
 
 # --- Tab 4: Compare ---
 with tabs[3]:
@@ -1218,7 +1218,7 @@ with tabs[3]:
             st.info("No comparable rows.")
         else:
             st.dataframe(cmp_df.sort_values(["Score","ROI%_ann"], ascending=[False, False]),
-                         use_container_width=True, height=520)
+                         width='stretch', height=520)
 
 # --- Tab 5: Risk (Monte Carlo) ---
 with tabs[4]:
@@ -1329,7 +1329,7 @@ with tabs[4]:
             y=alt.Y("count:Q", title="Frequency"),
             tooltip=["pnl","count"]
         )
-        st.altair_chart(base_chart, use_container_width=True)
+        st.altair_chart(base_chart, width='stretch')
 
         # ROI (annualized) percentiles table
         def pct(x): return f"{x*100:.2f}%"
@@ -1340,7 +1340,7 @@ with tabs[4]:
             {"Scenario":"P95 (bull)", "Annualized ROI": pct(mc["roi_ann_p95"])},
         ]
         st.subheader("Annualized ROI (from MC)")
-        st.dataframe(pd.DataFrame(roi_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(roi_rows), width='stretch')
 
         # At-a-Glance summary
         st.subheader("At‑a‑Glance: Trade Summary & Risk")
@@ -1351,7 +1351,7 @@ with tabs[4]:
             {"Scenario":"P95 (bull)", "P&L ($/contract)": f"{mc['pnl_p95']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p95"])},
             {"Scenario":"Expected",   "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(mc["roi_ann_expected"])},
         ]
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(summary_rows), width='stretch')
 
 # --- Tab 6: Playbook ---
 with tabs[5]:
@@ -1423,7 +1423,7 @@ with tabs[6]:
             bill_yield=float(t_bill_yield),
         )
         st.subheader("Best‑Practice Fit")
-        st.dataframe(fit_df, use_container_width=True)
+        st.dataframe(fit_df, width='stretch')
 
         # Extra options for CC runbook (do you already own shares?)
         holds_shares = False
@@ -1545,7 +1545,7 @@ with tabs[7]:
 
         # Display
         st.subheader("Stress Table")
-        st.dataframe(df_stress, use_container_width=True)
+        st.dataframe(df_stress, width='stretch')
 
         # Chart: shock vs total P&L
         st.subheader("P&L vs Price Shock")
@@ -1554,7 +1554,7 @@ with tabs[7]:
             y=alt.Y("Total_P&L:Q", title="Total P&L per contract (USD)"),
             tooltip=list(df_stress.columns)
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width='stretch')
 
         # Quick callouts
         worst = float(df_stress["Total_P&L"].min())

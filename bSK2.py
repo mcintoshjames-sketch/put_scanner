@@ -2050,14 +2050,14 @@ with st.sidebar:
             display_cols = ['Ticker', 'Price', 'HV_30d%', 'IV%', 'IV/HV', 'IV_Rank', 
                           'Spread%', 'Opt_Volume', 'Opt_OI', 'Quality_Score']
             display_cols = [c for c in display_cols if c in ps_df.columns]
-            st.dataframe(ps_df[display_cols], height=300, use_container_width=True)
+            st.dataframe(ps_df[display_cols], height=300, width='stretch')
             
             # Expandable detailed scores
             with st.expander("🔍 View Detailed Component Scores"):
                 detail_cols = ['Ticker', 'Quality_Score', 'ROI_Score', 'TG_Score', 
                              'Liq_Score', 'Safe_Score', 'IV%', 'HV_30d%', 'Spread%']
                 detail_cols = [c for c in detail_cols if c in ps_df.columns]
-                st.dataframe(ps_df[detail_cols], use_container_width=True)
+                st.dataframe(ps_df[detail_cols], width='stretch')
                 st.caption("""
                 **Component Scores (0.0 - 1.0):**
                 - **ROI_Score**: Premium potential (higher IV = more premium)
@@ -2423,7 +2423,7 @@ if all_tickers:
 
     if earnings_data:
         earnings_df = pd.DataFrame(earnings_data).sort_values("Days Away")
-        st.dataframe(earnings_df, use_container_width=True, height=200)
+        st.dataframe(earnings_df, width='stretch', height=200)
         st.caption(
             f"🔴 CAUTION: Earnings within ±{int(earn_window)} days (positions filtered out automatically)")
         st.caption(f"🟢 Safe: Earnings beyond ±{int(earn_window)} days")
@@ -2466,7 +2466,7 @@ with tabs[0]:
                 st.warning(
                     f"⚠️ {len(earnings_nearby)} position(s) have earnings within 14 days. Review 'DaysToEarnings' column.")
 
-        st.dataframe(df_csp[show_cols], use_container_width=True, height=520)
+        st.dataframe(df_csp[show_cols], width='stretch', height=520)
 
         # Add earnings legend
         st.caption(
@@ -2491,7 +2491,7 @@ with tabs[1]:
                 st.warning(
                     f"⚠️ {len(earnings_nearby)} position(s) have earnings within 14 days. Review 'DaysToEarnings' column.")
 
-        st.dataframe(df_cc[show_cols], use_container_width=True, height=520)
+        st.dataframe(df_cc[show_cols], width='stretch', height=520)
 
         # Add earnings legend
         st.caption(
@@ -2509,7 +2509,7 @@ with tabs[2]:
                      "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "Score"]
         show_cols = [c for c in show_cols if c in df_collar.columns]
         st.dataframe(df_collar[show_cols],
-                     use_container_width=True, height=520)
+                     width='stretch', height=520)
 
 # --- Tab 4: Compare ---
 with tabs[3]:
@@ -2546,7 +2546,7 @@ with tabs[3]:
             st.info("No comparable rows.")
         else:
             st.dataframe(cmp_df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]),
-                         use_container_width=True, height=520)
+                         width='stretch', height=520)
 
 # --- Tab 5: Risk (Monte Carlo) ---
 with tabs[4]:
@@ -2667,7 +2667,7 @@ with tabs[4]:
             y=alt.Y("count:Q", title="Frequency"),
             tooltip=["pnl", "count"],
         )
-        st.altair_chart(base_chart, use_container_width=True)
+        st.altair_chart(base_chart, width='stretch')
 
         def pct(x): return f"{x*100:.2f}%"
         roi_rows = [
@@ -2680,7 +2680,7 @@ with tabs[4]:
                 mc["roi_ann_p95"])},
         ]
         st.subheader("Annualized ROI (from MC)")
-        st.dataframe(pd.DataFrame(roi_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(roi_rows), width='stretch')
 
         st.subheader("At‑a‑Glance: Trade Summary & Risk")
         summary_rows = [
@@ -2693,7 +2693,7 @@ with tabs[4]:
             {"Scenario": "Expected",
                 "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(mc["roi_ann_expected"])},
         ]
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(summary_rows), width='stretch')
 
 # --- Tab 6: Playbook ---
 with tabs[5]:
@@ -2748,7 +2748,7 @@ with tabs[6]:
             bill_yield=float(t_bill_yield),
         )
         st.subheader("Best‑Practice Fit")
-        st.dataframe(fit_df, use_container_width=True)
+        st.dataframe(fit_df, width='stretch')
 
         # Extra options for CC runbook (do you already own shares?)
         holds_shares = False
@@ -2855,7 +2855,7 @@ with tabs[7]:
         )
 
         st.subheader("Stress Table")
-        st.dataframe(df_stress, use_container_width=True)
+        st.dataframe(df_stress, width='stretch')
 
         st.subheader("P&L vs Price Shock")
         chart = alt.Chart(df_stress).mark_line(point=True).encode(
@@ -2863,7 +2863,7 @@ with tabs[7]:
             y=alt.Y("Total_P&L:Q", title="Total P&L per contract (USD)"),
             tooltip=list(df_stress.columns),
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width='stretch')
 
         worst = float(df_stress["Total_P&L"].min())
         best = float(df_stress["Total_P&L"].max())
@@ -3064,7 +3064,7 @@ with tabs[8]:
                 y=alt.Y("count()", title="Paths"),
                 tooltip=[alt.Tooltip("count()", title="Paths")]
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width='stretch')
 
         st.caption(
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
@@ -3219,7 +3219,7 @@ with tabs[9]:
 
                         st.dataframe(
                             roll_df[show_cols].head(10),
-                            use_container_width=True,
+                            width='stretch',
                             height=400
                         )
 

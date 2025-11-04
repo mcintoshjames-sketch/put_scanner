@@ -234,7 +234,7 @@ with col6:
 if "CSP" in selected_strategies and not results["csp"].empty:
     st.subheader("💰 Cash-Secured Puts (CSP)")
     st.success(f"Found {len(results['csp'])} CSP contracts")
-    st.dataframe(results["csp"], use_container_width=True)
+    st.dataframe(results["csp"], width='stretch')
     st.download_button(
         "📥 Download CSP CSV",
         results["csp"].to_csv(index=False).encode("utf-8"),
@@ -247,7 +247,7 @@ elif "CSP" in selected_strategies:
 if "CC" in selected_strategies and not results["cc"].empty:
     st.subheader("📈 Covered Calls (CC)")
     st.success(f"Found {len(results['cc'])} CC contracts")
-    st.dataframe(results["cc"], use_container_width=True)
+    st.dataframe(results["cc"], width='stretch')
     st.download_button(
         "📥 Download CC CSV",
         results["cc"].to_csv(index=False).encode("utf-8"),
@@ -260,7 +260,7 @@ elif "CC" in selected_strategies:
 if "Collar" in selected_strategies and not results["collar"].empty:
     st.subheader("🔒 Collars")
     st.success(f"Found {len(results['collar'])} Collar contracts")
-    st.dataframe(results["collar"], use_container_width=True)
+    st.dataframe(results["collar"], width='stretch')
     st.download_button(
         "📥 Download Collar CSV",
         results["collar"].to_csv(index=False).encode("utf-8"),
@@ -273,7 +273,7 @@ elif "Collar" in selected_strategies:
 if "IC" in selected_strategies and not results["ic"].empty:
     st.subheader("🦅 Iron Condors (IC)")
     st.success(f"Found {len(results['ic'])} IC contracts")
-    st.dataframe(results["ic"], use_container_width=True)
+    st.dataframe(results["ic"], width='stretch')
     st.download_button(
         "📥 Download IC CSV",
         results["ic"].to_csv(index=False).encode("utf-8"),
@@ -286,7 +286,7 @@ elif "IC" in selected_strategies:
 if "Bull Put" in selected_strategies and not results["bull_put"].empty:
     st.subheader("🐂 Bull Put Spreads")
     st.success(f"Found {len(results['bull_put'])} Bull Put Spread contracts")
-    st.dataframe(results["bull_put"], use_container_width=True)
+    st.dataframe(results["bull_put"], width='stretch')
     st.download_button(
         "📥 Download Bull Put CSV",
         results["bull_put"].to_csv(index=False).encode("utf-8"),
@@ -299,7 +299,7 @@ elif "Bull Put" in selected_strategies:
 if "Bear Call" in selected_strategies and not results["bear_call"].empty:
     st.subheader("🐻 Bear Call Spreads")
     st.success(f"Found {len(results['bear_call'])} Bear Call Spread contracts")
-    st.dataframe(results["bear_call"], use_container_width=True)
+    st.dataframe(results["bear_call"], width='stretch')
     st.download_button(
         "📥 Download Bear Call CSV",
         results["bear_call"].to_csv(index=False).encode("utf-8"),
