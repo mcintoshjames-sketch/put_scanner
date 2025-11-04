@@ -410,7 +410,8 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
     """
     S0 = float(params["S0"])
     days = int(params["days"])
-    T = days / 365.0
+    # Time horizon for price simulation; allow T=0 for same-day to maintain P&L logic
+    T = max(days, 0) / 365.0
     # Ensure non-degenerate volatility for stochastic paths
     sigma = float(params.get("iv", 0.20))
     # Clamp volatility to reasonable bounds to avoid numerical issues
@@ -530,9 +531,14 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
     pnl_contract = 100.0 * pnl_per_share
     capital_contract = 100.0 * capital_per_share
 
-    with np.errstate(invalid="ignore", divide="ignore"):
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
         roi_cycle = pnl_contract / capital_contract
-        roi_ann = (1.0 + roi_cycle) ** (365.0 / days) - 1.0
+        # Guard against zero/negative day horizons which cause exponent blow-ups
+        if days <= 0:
+            # Annualized ROI is undefined for 0-day horizon; prefer NaN over infinities
+            roi_ann = np.full_like(roi_cycle, np.nan)
+        else:
+            roi_ann = (1.0 + roi_cycle) ** (365.0 / days) - 1.0
 
     out = {
         "S_T": S_T,

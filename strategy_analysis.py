@@ -443,6 +443,10 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             counters["otm_pass"] += 1
 
             # Annualized ROI on stock capital (S)
+            # Guard against 0-day expirations which would explode annualization
+            if D <= 0:
+                # Skip same-day expirations for CC to avoid pathological annualization
+                continue
             roi_ann = (prem / S) * (365.0 / D)
             if include_dividends and div_ps_annual > 0:
                 roi_ann += (div_ps_annual / S)
