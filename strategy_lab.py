@@ -65,6 +65,13 @@ from options_math import (
 )
 
 
+# Import utility functions
+from utils import (
+    _safe_float, _safe_int, _get_num_from_row,
+    _mid_price, _fmt_usd, _iv_decimal, _series_get,
+    effective_credit, effective_debit
+)
+
 # Import strategy analyzers from strategy_analysis module
 from strategy_analysis import (
     analyze_csp,
@@ -484,69 +491,6 @@ def fetch_chain_uncached(symbol: str, expiration: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _get_num_from_row(r: pd.Series, keys: list, default=float("nan")) -> float:
-    """Try multiple key names from a row/Series and return numeric value."""
-    for k in keys:
-        try:
-            if hasattr(r, "get"):
-                v = r.get(k, None)
-            else:
-                v = r[k]
-        except Exception:
-            v = None
-        f = _safe_float(v, default)
-        if f == f:  # not NaN
-            return f
-    return default
-
-
-def _safe_float(x, default=float("nan")):
-    try:
-        return float(x)
-    except Exception:
-        return default
-
-
-def _safe_int(x, default=0):
-    try:
-        f = float(x)
-        if f != f:  # NaN
-            return default
-        return int(f)
-    except Exception:
-        return default
-
-
-def effective_credit(bid, ask, last=None, alpha=0.25):
-    """
-    Realistic credit for SELL orders: bid + alpha*(ask-bid).
-    alpha ~ 0.25 for liquid names; falls back to 0.95*last if no quotes.
-    """
-    b = _safe_float(bid)
-    a = _safe_float(ask)
-    l = _safe_float(last, 0.0)
-    if b == b and a == a and b > 0 and a > 0 and a >= b:
-        return b + alpha * (a - b)
-    if l == l and l > 0:
-        return 0.95 * l
-    return float("nan")
-
-
-def effective_debit(bid, ask, last=None, alpha=0.25):
-    """
-    Realistic debit for BUY orders: ask - alpha*(ask-bid).
-    Falls back to 1.05*last if no quotes.
-    """
-    b = _safe_float(bid)
-    a = _safe_float(ask)
-    l = _safe_float(last, 0.0)
-    if b == b and a == a and b > 0 and a > 0 and a >= b:
-        return a - alpha * (a - b)
-    if l == l and l > 0:
-        return 1.05 * l
-    return float("nan")
-
-
 def estimate_next_ex_div(stock):
     """
     Heuristic: use last 2-4 historical dividend dates to estimate next ex-div date & amount.
@@ -571,17 +515,6 @@ def estimate_next_ex_div(stock):
         return next_date.date(), amt
     except Exception:
         return None, 0.0
-
-
-def _mid_price(bid, ask, last):
-    bid = _safe_float(bid)
-    ask = _safe_float(ask)
-    last = _safe_float(last, 0.0)
-    if bid == bid and ask == ask and bid > 0 and ask > 0:
-        return (bid + ask) / 2.0
-    if last == last and last > 0:
-        return last
-    return float("nan")
 
 
 # ----------------------------- Expiration Safety Module -----------------------------
@@ -890,30 +823,6 @@ def best_practices(strategy):
     return []
 
 # ---------- Strategy Fit & Runbook helpers ----------
-
-
-def _fmt_usd(x, nd=2):
-    try:
-        return f"${float(x):,.{nd}f}"
-    except Exception:
-        return str(x)
-
-
-def _iv_decimal(row, default=0.20):
-    iv = row.get("IV", float("nan"))
-    try:
-        ivf = float(iv) / 100.0
-        return ivf if ivf == ivf and ivf > 0 else default
-    except Exception:
-        return default
-
-
-def _series_get(row, key, default=float("nan")):
-    try:
-        v = row.get(key, default)
-        return v if v == v else default
-    except Exception:
-        return default
 
 
 def compute_put_delta_for_row(row, risk_free, div_y):
