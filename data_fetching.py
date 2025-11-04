@@ -189,20 +189,198 @@ def estimate_next_ex_div(stock):
     except Exception:
         return None, 0.0
 
-def check_expiration_risk(expiration_str, ticker=None):
-    """Check if expiration date has elevated risk"""
+def check_expiration_risk(expiration_str: str, strategy: str = "CSP", open_interest: int = 0, 
+                          bid_ask_spread_pct: float = 0.0, ticker=None) -> dict:
+    """
+    Analyze expiration date risk and return comprehensive safety assessment.
+    
+    Args:
+        expiration_str: Expiration date string (e.g., "2025-11-15")
+        strategy: Strategy type ("CSP", "CC", "Collar", "Bull Put Spread", "Bear Call Spread", "Iron Condor")
+        open_interest: Open interest for the option(s)
+        bid_ask_spread_pct: Bid-ask spread as percentage of mid price
+        ticker: Legacy parameter for backwards compatibility (unused)
+    
+    Returns:
+        dict with keys:
+            - is_standard: bool (True if standard Friday expiration)
+            - expiration_type: str ("Monthly 3rd Friday", "Weekly Friday", "Non-Standard")
+            - day_of_week: str (e.g., "Friday", "Monday")
+            - risk_level: str ("LOW", "MEDIUM", "HIGH", "EXTREME")
+            - action: str ("ALLOW", "WARN", "BLOCK")
+            - warning_message: str (human-readable warning)
+            - risk_factors: list[str] (specific concerns)
+            - is_monthly: bool (for backwards compatibility)
+            - elevated_risk: bool (for backwards compatibility)
+    """
     try:
-        exp_date = datetime.strptime(expiration_str, "%Y-%m-%d")
-        # Check if it's a monthly expiration (3rd Friday)
-        # More checks can be added here
-        return {
-            "expiration_type": "monthly" if exp_date.day >= 15 and exp_date.day <= 21 else "weekly",
-            "is_monthly": exp_date.day >= 15 and exp_date.day <= 21,
-            "elevated_risk": False  # Can add more sophisticated risk checks
-        }
+        exp_date = datetime.strptime(expiration_str, "%Y-%m-%d").date()
     except Exception:
         return {
-            "expiration_type": "unknown",
+            "is_standard": False,
+            "expiration_type": "Invalid Date",
+            "day_of_week": "Unknown",
+            "risk_level": "EXTREME",
+            "action": "BLOCK",
+            "warning_message": "⛔ INVALID EXPIRATION DATE",
+            "risk_factors": ["Cannot parse expiration date"],
             "is_monthly": False,
-            "elevated_risk": False
+            "elevated_risk": True
         }
+    
+    day_of_week = exp_date.strftime("%A")
+    weekday_num = exp_date.weekday()  # 0=Monday, 4=Friday
+    
+    # Check if it's a Friday
+    is_friday = (weekday_num == 4)
+    
+    # Check if it's the 3rd Friday (monthly standard)
+    first_day = exp_date.replace(day=1)
+    first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
+    third_friday = first_friday + timedelta(days=14)
+    is_third_friday = (exp_date == third_friday)
+    
+    risk_factors = []
+    
+    # Determine expiration type
+    if is_third_friday:
+        expiration_type = "Monthly (3rd Friday)"
+        is_standard = True
+        base_risk = "LOW"
+    elif is_friday:
+        expiration_type = "Weekly (Friday)"
+        is_standard = True
+        base_risk = "MEDIUM"
+        risk_factors.append("Weekly option - verify liquidity")
+    else:
+        expiration_type = f"Non-Standard ({day_of_week})"
+        is_standard = False
+        base_risk = "HIGH"
+        risk_factors.append(f"⚠️ Expires on {day_of_week} (not Friday)")
+    
+    # Liquidity assessment
+    if open_interest > 0:
+        if open_interest < 100:
+            risk_factors.append(f"Very low OI ({open_interest}) - poor liquidity")
+        elif open_interest < 500:
+            risk_factors.append(f"Low OI ({open_interest}) - limited liquidity")
+        elif open_interest < 1000 and not is_standard:
+            risk_factors.append(f"Moderate OI ({open_interest}) but non-standard expiration")
+    
+    if bid_ask_spread_pct > 0:
+        if bid_ask_spread_pct > 10.0:
+            risk_factors.append(f"Extremely wide spread ({bid_ask_spread_pct:.1f}%)")
+        elif bid_ask_spread_pct > 5.0:
+            risk_factors.append(f"Wide spread ({bid_ask_spread_pct:.1f}%)")
+        elif bid_ask_spread_pct > 3.0 and not is_standard:
+            risk_factors.append(f"Spread {bid_ask_spread_pct:.1f}% on non-standard expiration")
+    
+    # Strategy-specific risk assessment
+    strategy_risk_map = {
+        "CSP": {
+            "standard": "LOW",
+            "weekly": "MEDIUM",
+            "nonstandard": "HIGH",
+            "multi_leg": False
+        },
+        "CC": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "HIGH",
+            "multi_leg": False
+        },
+        "Collar": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "HIGH",
+            "multi_leg": True
+        },
+        "Bull Put Spread": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        },
+        "Bear Call Spread": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        },
+        "Iron Condor": {
+            "standard": "MEDIUM",
+            "weekly": "HIGH",
+            "nonstandard": "EXTREME",
+            "multi_leg": True
+        }
+    }
+    
+    strat_info = strategy_risk_map.get(strategy, {
+        "standard": "MEDIUM",
+        "weekly": "HIGH",
+        "nonstandard": "EXTREME",
+        "multi_leg": False
+    })
+    
+    # Determine final risk level
+    if is_third_friday:
+        risk_level = strat_info["standard"]
+    elif is_friday:
+        risk_level = strat_info["weekly"]
+    else:
+        risk_level = strat_info["nonstandard"]
+    
+    # Escalate risk based on liquidity
+    if open_interest > 0 and open_interest < 100:
+        if risk_level == "LOW":
+            risk_level = "MEDIUM"
+        elif risk_level == "MEDIUM":
+            risk_level = "HIGH"
+    
+    if bid_ask_spread_pct > 5.0 and risk_level in ["LOW", "MEDIUM"]:
+        risk_level = "HIGH"
+    
+    # Multi-leg strategies get extra scrutiny
+    if strat_info["multi_leg"] and not is_standard:
+        if open_interest < 1000:
+            risk_factors.append("⛔ Multi-leg strategy requires OI > 1000 for non-standard expirations")
+            risk_level = "EXTREME"
+    
+    # Determine action
+    if risk_level == "EXTREME":
+        action = "BLOCK"
+        warning_icon = "⛔"
+    elif risk_level == "HIGH":
+        if strat_info["multi_leg"]:
+            action = "BLOCK"  # Block high-risk multi-leg
+            warning_icon = "⛔"
+        else:
+            action = "WARN"
+            warning_icon = "⚠️"
+    elif risk_level == "MEDIUM":
+        action = "WARN"
+        warning_icon = "⚠️"
+    else:
+        action = "ALLOW"
+        warning_icon = "✅"
+    
+    # Build warning message
+    if action == "BLOCK":
+        warning_message = f"⛔ BLOCKED: {expiration_type} - {strategy}"
+    elif action == "WARN":
+        warning_message = f"⚠️ WARNING: {expiration_type} - {strategy}"
+    else:
+        warning_message = f"✅ Standard: {expiration_type}"
+    
+    return {
+        "is_standard": is_standard,
+        "expiration_type": expiration_type,
+        "day_of_week": day_of_week,
+        "risk_level": risk_level,
+        "action": action,
+        "warning_message": warning_message,
+        "risk_factors": risk_factors,
+        # Backwards compatibility fields
+        "is_monthly": is_third_friday,
+        "elevated_risk": (risk_level in ["HIGH", "EXTREME"])
+    }
