@@ -5134,7 +5134,7 @@ with tabs[7]:
                 y=alt.Y("count:Q", title="Frequency"),
                 tooltip=["pnl", "count"],
             )
-            st.altair_chart(base_chart, width='stretch')
+            st.altair_chart(base_chart, use_container_width=True)
 
             def pct(x): return f"{x*100:.2f}%"
             roi_rows = [
@@ -5337,7 +5337,7 @@ with tabs[10]:
             y=alt.Y("Total_P&L:Q", title="Total P&L per contract (USD)"),
             tooltip=list(df_stress.columns),
         )
-        st.altair_chart(chart, width='stretch')
+    st.altair_chart(chart, use_container_width=True)
 
         worst = float(df_stress["Total_P&L"].min())
         best = float(df_stress["Total_P&L"].max())
@@ -5738,7 +5738,7 @@ with tabs[11]:
                 y=alt.Y("count()", title="Paths"),
                 tooltip=[alt.Tooltip("count()", title="Paths")]
             )
-            st.altair_chart(chart, width='stretch')
+            st.altair_chart(chart, use_container_width=True)
 
         st.caption(
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
