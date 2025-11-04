@@ -4231,7 +4231,7 @@ with tabs[6]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=exit_price,
-                                            duration="GTC"
+                                            duration="GOOD_TILL_CANCEL"
                                         )
                                         exit_metadata = {
                                             **metadata,
@@ -4256,7 +4256,7 @@ with tabs[6]:
                                             quantity=int(num_contracts),
                                             order_type="LIMIT",
                                             limit_price=exit_price,
-                                            duration="GTC"
+                                            duration="GOOD_TILL_CANCEL"
                                         )
                                         exit_metadata = {
                                             **metadata,
@@ -4267,41 +4267,47 @@ with tabs[6]:
                                         }
                                         exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
-                                elif selected_strategy == "COLLAR":
-                                    # Exit: Close both legs atomically
-                                    call_entry = float(selected.get('CallPrem', 0))
-                                    put_entry = float(selected.get('PutPrem', 0))
-                                    
-                                    # Calculate target exit prices
-                                    call_exit = max(0.05, call_entry * (1.0 - profit_capture_decimal))
-                                    put_exit = put_entry * 0.5  # Close put at ~50% of cost
-                                    
-                                    # Net exit: paying call_exit to close call, receiving put_exit for put
-                                    # Net = put_exit - call_exit (negative = we pay net debit)
-                                    net_exit = put_exit - call_exit
-                                    
-                                    # Create atomic multi-leg exit order
-                                    exit_order = trader.create_collar_exit_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        call_strike=float(selected['CallStrike']),
-                                        put_strike=float(selected['PutStrike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=net_exit,
-                                        duration="GTC"
-                                    )
-                                    
-                                    exit_metadata = {
-                                        **metadata,
-                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                        "call_entry_premium": call_entry,
-                                        "call_exit_price": call_exit,
-                                        "put_entry_cost": put_entry,
-                                        "put_exit_price": put_exit,
-                                        "net_exit": net_exit
-                                    }
-                                    
-                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                    elif selected_strategy == "COLLAR":
+                                        # Exit: Close both legs atomically
+                                        call_entry = float(selected.get('CallPrem', 0))
+                                        put_entry = float(selected.get('PutPrem', 0))
+                                        
+                                        # Calculate target exit prices
+                                        call_exit = max(0.05, call_entry * (1.0 - profit_capture_decimal))
+                                        put_exit = put_entry * 0.5  # Close put at ~50% of cost
+                                        
+                                        # Net exit: paying call_exit to close call, receiving put_exit for put
+                                        # Net = put_exit - call_exit (negative = we pay net debit)
+                                        net_exit = put_exit - call_exit
+                                        
+                                        # Create atomic multi-leg exit order
+                                        try:
+                                            exit_order = trader.create_collar_exit_order(
+                                                symbol=selected['Ticker'],
+                                                expiration=selected['Exp'],
+                                                call_strike=float(selected['CallStrike']),
+                                                put_strike=float(selected['PutStrike']),
+                                                quantity=int(num_contracts),
+                                                limit_price=net_exit,
+                                                duration="GOOD_TILL_CANCEL"
+                                            )
+                                            
+                                            exit_metadata = {
+                                                **metadata,
+                                                "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                                "call_entry_premium": call_entry,
+                                                "call_exit_price": call_exit,
+                                                "put_entry_cost": put_entry,
+                                                "put_exit_price": put_exit,
+                                                "net_exit": net_exit
+                                            }
+                                            
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        except Exception as e:
+                                            st.error(f"❌ Error creating collar exit order: {str(e)}")
+                                            import traceback
+                                            st.code(traceback.format_exc())
+                                            exit_result = None
                                     
                                 elif selected_strategy == "IRON_CONDOR":
                                     # Exit: Close entire spread (all 4 legs) as net debit
@@ -4317,7 +4323,7 @@ with tabs[6]:
                                         long_call_strike=float(selected['CallLongStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=exit_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                     )
                                     exit_metadata = {
                                         **metadata,
@@ -4340,7 +4346,7 @@ with tabs[6]:
                                         buy_strike=float(selected['BuyStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=exit_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                     )
                                     exit_metadata = {
                                         **metadata,
@@ -4363,7 +4369,7 @@ with tabs[6]:
                                         buy_strike=float(selected['BuyStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=exit_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                     )
                                     exit_metadata = {
                                         **metadata,
@@ -4394,7 +4400,7 @@ with tabs[6]:
                                         quantity=int(num_contracts),
                                         order_type="LIMIT",
                                         limit_price=stop_loss_price,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata = {
                                         **metadata,
@@ -4421,7 +4427,7 @@ with tabs[6]:
                                         quantity=int(num_contracts),
                                         order_type="LIMIT",
                                         limit_price=stop_loss_price,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata = {
                                         **metadata,
@@ -4448,7 +4454,7 @@ with tabs[6]:
                                         long_call_strike=float(selected['CallLongStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=stop_loss_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata = {
                                         **metadata,
@@ -4473,7 +4479,7 @@ with tabs[6]:
                                         buy_strike=float(selected['BuyStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=stop_loss_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata = {
                                         **metadata,
@@ -4498,7 +4504,7 @@ with tabs[6]:
                                         buy_strike=float(selected['BuyStrike']),
                                         quantity=int(num_contracts),
                                         limit_price=stop_loss_debit,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata = {
                                         **metadata,
@@ -4524,7 +4530,7 @@ with tabs[6]:
                                         quantity=int(num_contracts),
                                         order_type="LIMIT",
                                         limit_price=call_stop_loss,
-                                        duration="GTC"
+                                        duration="GOOD_TILL_CANCEL"
                                         )
                                         stop_loss_metadata_call = {
                                         **metadata,

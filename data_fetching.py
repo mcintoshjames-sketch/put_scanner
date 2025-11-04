@@ -120,9 +120,15 @@ def _get_num_from_row(r: pd.Series, keys: list, default=float("nan")) -> float:
                 v = r[k]
         except Exception:
             v = None
+        
+        # Skip None values - try the next key
+        if v is None:
+            continue
+        
         f = _safe_float(v, default)
         if f == f:  # not NaN
             return f
+    
     return default
 
 def _safe_int(x, default=0):

@@ -354,6 +354,18 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
     earn_date = get_earnings_date(stock)
 
     div_ps_annual, div_y = trailing_dividend_info(stock, S)  # per share annual
+    
+    # Debug counters
+    counters = {
+        "expirations": 0,
+        "rows": 0,
+        "premium_pass": 0,
+        "otm_pass": 0,
+        "roi_pass": 0,
+        "oi_pass": 0,
+        "spread_pass": 0,
+        "final": 0,
+    }
     rows = []
     for exp in expirations:
         try:
@@ -369,12 +381,15 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
         chain_all = fetch_chain(ticker, exp)
         if chain_all is None or chain_all.empty:
             continue
+        counters["expirations"] += 1
         if "type" in chain_all.columns:
             chain = chain_all[chain_all["type"].str.lower() == "call"].copy()
         else:
             chain = chain_all.copy()
         if chain.empty:
             continue
+
+        counters["rows"] += len(chain)
 
         T = D / 365.0
         for _, r in chain.iterrows():
@@ -388,6 +403,7 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             prem = effective_credit(bid, ask, last)
             if prem != prem or prem <= 0:
                 continue
+            counters["premium_pass"] += 1
             iv_raw = _get_num_from_row(
                 r, ["impliedVolatility", "iv", "IV"], float("nan"))
             if iv_raw == iv_raw and iv_raw > 3.0:
@@ -402,6 +418,7 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             otm_pct = (K - S) / S * 100.0
             if otm_pct < float(min_otm):
                 continue
+            counters["otm_pass"] += 1
 
             # Annualized ROI on stock capital (S)
             roi_ann = (prem / S) * (365.0 / D)
@@ -410,18 +427,22 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
 
             if roi_ann != roi_ann or roi_ann < float(min_roi):
                 continue
+            counters["roi_pass"] += 1
 
             oi = _safe_int(_get_num_from_row(
                 r, ["openInterest", "oi", "open_interest"], 0), 0)
             vol = _safe_int(_get_num_from_row(
                 r, ["volume", "Volume", "vol"], 0), 0)
+            
             if min_oi and oi < int(min_oi):
                 continue
+            counters["oi_pass"] += 1
 
             mid = prem
             spread_pct = compute_spread_pct(bid, ask, mid)
             if (spread_pct is not None) and (spread_pct > float(max_spread)):
                 continue
+            counters["spread_pass"] += 1
 
             exp_mv = expected_move(S, iv_for_calc, T)
             cushion_sigma = ((K - S) / exp_mv) if (exp_mv ==
@@ -599,6 +620,19 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 "ExpRisk": exp_risk["risk_level"],
                 "ExpAction": exp_risk["action"],
             })
+            counters["final"] += 1
+    
+    # Log summary statistics
+    logging.info(f"\n{ticker} CC Filter Statistics:")
+    logging.info(f"  Total options examined: {counters['rows']}")
+    if counters['rows'] > 0:
+        logging.info(f"  Passed premium filter: {counters['premium_pass']} ({100.0*counters['premium_pass']/counters['rows']:.1f}%)")
+        logging.info(f"  Passed OTM filter: {counters['otm_pass']} ({100.0*counters['otm_pass']/counters['rows']:.1f}%)")
+        logging.info(f"  Passed ROI filter: {counters['roi_pass']} ({100.0*counters['roi_pass']/counters['rows']:.1f}%)")
+        logging.info(f"  Passed OI filter: {counters['oi_pass']} ({100.0*counters['oi_pass']/counters['rows']:.1f}%)")
+        logging.info(f"  Passed spread filter: {counters['spread_pass']} ({100.0*counters['spread_pass']/counters['rows']:.1f}%)")
+        logging.info(f"  Final results: {counters['final']}")
+    
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values(["Score", "ROI%_ann"], ascending=[

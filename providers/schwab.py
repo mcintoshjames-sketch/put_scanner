@@ -42,7 +42,7 @@ class SchwabClient:
         self.api_key = api_key or os.environ.get("SCHWAB_API_KEY")
         self.app_secret = app_secret or os.environ.get("SCHWAB_APP_SECRET")
         self.callback_url = callback_url or os.environ.get(
-            "SCHWAB_CALLBACK_URL", "https://localhost"
+            "SCHWAB_CALLBACK_URL", "https://127.0.0.1"
         )
         self.token_path = token_path or os.environ.get(
             "SCHWAB_TOKEN_PATH", "./schwab_token.json"

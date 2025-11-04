@@ -18,7 +18,7 @@ def main():
     # Check credentials
     api_key = os.environ.get("SCHWAB_API_KEY")
     app_secret = os.environ.get("SCHWAB_APP_SECRET")
-    callback_url = os.environ.get("SCHWAB_CALLBACK_URL", "https://localhost")
+    callback_url = os.environ.get("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
     token_path = os.environ.get("SCHWAB_TOKEN_PATH", "./schwab_token.json")
     
     if not api_key or not app_secret:
