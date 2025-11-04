@@ -142,17 +142,22 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 continue
             counters["roi_pass"] += 1
 
+            # DEBUG: Print first few rows that reach OI check
+            if counters["roi_pass"] <= 5:
+                print(f"\n=== DEBUG: Row {counters['roi_pass']} that passed ROI ===")
+                print(f"  Available columns: {list(r.index)}")
+                print(f"  Raw openInterest value: {r.get('openInterest', 'NOT FOUND')}")
+                print(f"  Raw oi value: {r.get('oi', 'NOT FOUND')}")
+            
             oi = _safe_int(_get_num_from_row(
                 r, ["openInterest", "oi", "open_interest", "OI"], 0), 0)
             vol = _safe_int(_get_num_from_row(
                 r, ["volume", "Volume", "vol"], 0), 0)
             
-            # DEBUG: Print first few OI values to see what we're getting
-            if counters["oi_pass"] == 0 and counters["rows"] <= 5:
-                print(f"DEBUG OI check - Row {counters['rows']}: oi={oi}, vol={vol}, min_oi={min_oi}")
-                print(f"  Available columns: {list(r.index)}")
-                print(f"  Raw openInterest: {r.get('openInterest', 'NOT FOUND')}")
-                print(f"  Raw oi: {r.get('oi', 'NOT FOUND')}")
+            # DEBUG: Print computed values
+            if counters["roi_pass"] <= 5:
+                print(f"  Computed oi: {oi}, vol: {vol}, min_oi threshold: {min_oi}")
+                print(f"  Will filter? {min_oi and oi < int(min_oi)}")
             
             if min_oi and oi < int(min_oi):
                 continue
