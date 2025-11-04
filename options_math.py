@@ -290,11 +290,32 @@ def get_earnings_date(stock: yf.Ticker, use_alpha_vantage=False):
     Returns:
         Earnings date or None if unavailable.
     """
+    import warnings
+    import sys
+    import io
+    import logging
     yahoo_date = None
     
     try:
         # Method 1: Try the calendar attribute
-        cal = stock.calendar
+        # Suppress warnings/errors from yfinance (e.g., 404 for ETFs with no earnings)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            # Suppress yfinance logger
+            yf_logger = logging.getLogger('yfinance')
+            old_level = yf_logger.level
+            yf_logger.setLevel(logging.CRITICAL)
+            # Also suppress stdout/stderr output (HTTP errors from yfinance)
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+            try:
+                cal = stock.calendar
+            finally:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+                yf_logger.setLevel(old_level)
         if cal is not None and not cal.empty:
             if "Earnings Date" in cal.index:
                 ed = cal.loc["Earnings Date"]

@@ -158,19 +158,22 @@ streamlit run strategy_lab.py
 | Step | Status | Lines Moved | Lines Remaining | Commits |
 |------|--------|-------------|-----------------|---------|
 | **Baseline** | ✅ | 0 | 8,491 | 4c4054d |
-| **Step 1: Math** | � IN PROGRESS | 413 | ~8,078 | - |
+| **Step 1: Math** | ✅ **COMPLETE** | 413 | 8,092 | 081abcc, ffb2523 |
 | **Step 2: Analyzers** | ⏳ | 1,837 | ~6,241 | - |
 | **Step 3: UI** | ⏳ | 778 | ~5,463 | - |
 | **Step 4: Tabs** | ⏳ | 3,400 | ~2,063 | - |
 | **Step 5: Utils** | ⏳ | ~500 | ~1,563 | - |
 | **Target** | 🎯 | ~6,928 | ~3,500 | - |
 
-### Step 1 Progress:
-- ✅ Created options_math.py (530 lines with docs)
+### Step 1 Complete ✅:
+- ✅ Created options_math.py (547 lines)
 - ✅ Module compiles successfully
 - ✅ All imports work
 - ✅ Test script passes (6 tests)
-- 🔄 Next: Update strategy_lab.py imports
+- ✅ Updated strategy_lab.py imports
+- ✅ Fixed missing helper function imports (_bs_d1_d2, _norm_cdf)
+- ✅ Removed duplicate _norm_cdf definition
+- **Final:** strategy_lab.py reduced from 8,491 → 8,092 lines (399 lines removed)
 
 ---
 
