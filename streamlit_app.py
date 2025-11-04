@@ -1,4 +1,11 @@
 # streamlit_app.py — Interactive dashboard for your short-put scanner
+import warnings
+import logging
+
+# Suppress Streamlit's ScriptRunContext warnings in worker threads
+warnings.filterwarnings('ignore', message='.*ScriptRunContext.*')
+logging.getLogger('streamlit.runtime.scriptrunner').setLevel(logging.ERROR)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
