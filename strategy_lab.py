@@ -4220,7 +4220,8 @@ with tabs[6]:
                                     if selected_strategy == "CSP":
                                         # Exit: Buy to close at target price
                                         entry_premium = float(selected['Premium'])
-                                        exit_price = max(0.05, entry_premium * (1.0 - profit_capture_decimal))
+                                        # Round to penny increments for Schwab API
+                                        exit_price = round(max(0.05, entry_premium * (1.0 - profit_capture_decimal)), 2)
                                         
                                         exit_order = trader.create_option_order(
                                             symbol=selected['Ticker'],
@@ -4245,7 +4246,8 @@ with tabs[6]:
                                     elif selected_strategy == "CC":
                                         # Exit: Buy to close at target price
                                         entry_premium = float(selected['Premium'])
-                                        exit_price = max(0.05, entry_premium * (1.0 - profit_capture_decimal))
+                                        # Round to penny increments for Schwab API
+                                        exit_price = round(max(0.05, entry_premium * (1.0 - profit_capture_decimal)), 2)
                                         
                                         exit_order = trader.create_option_order(
                                             symbol=selected['Ticker'],
@@ -4278,7 +4280,8 @@ with tabs[6]:
                                         
                                         # Net exit: paying call_exit to close call, receiving put_exit for put
                                         # Net = put_exit - call_exit (negative = we pay net debit)
-                                        net_exit = put_exit - call_exit
+                                        # Round to penny increments for Schwab API
+                                        net_exit = round(put_exit - call_exit, 2)
                                         
                                         # Create atomic multi-leg exit order
                                         try:
@@ -4312,7 +4315,8 @@ with tabs[6]:
                                 elif selected_strategy == "IRON_CONDOR":
                                     # Exit: Close entire spread (all 4 legs) as net debit
                                     entry_credit = float(selected['NetCredit'])
-                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    # Round to penny increments for Schwab API
+                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
                                     
                                     exit_order = trader.create_iron_condor_exit_order(
                                         symbol=selected['Ticker'],
@@ -4337,7 +4341,8 @@ with tabs[6]:
                                 elif selected_strategy == "BULL_PUT_SPREAD":
                                     # Exit: Close entire spread (both legs) as net debit
                                     entry_credit = float(selected['NetCredit'])
-                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    # Round to penny increments for Schwab API
+                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
                                     
                                     exit_order = trader.create_bull_put_spread_exit_order(
                                         symbol=selected['Ticker'],
@@ -4360,7 +4365,8 @@ with tabs[6]:
                                 elif selected_strategy == "BEAR_CALL_SPREAD":
                                     # Exit: Close entire spread (both legs) as net debit
                                     entry_credit = float(selected['NetCredit'])
-                                    exit_debit = max(0.05, entry_credit * (1.0 - profit_capture_decimal))
+                                    # Round to penny increments for Schwab API
+                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
                                     
                                     exit_order = trader.create_bear_call_spread_exit_order(
                                         symbol=selected['Ticker'],
@@ -4388,7 +4394,8 @@ with tabs[6]:
                                     if selected_strategy == "CSP":
                                         # Risk: Close if option value reaches 2x entry premium (doubled loss)
                                         entry_premium = float(selected['Premium'])
-                                        stop_loss_price = entry_premium * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        stop_loss_price = round(entry_premium * risk_multiplier, 2)
                                         max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
                                         
                                         stop_loss_order = trader.create_option_order(
@@ -4415,7 +4422,8 @@ with tabs[6]:
                                     elif selected_strategy == "CC":
                                         # Risk: Close if option value reaches 2x entry premium
                                         entry_premium = float(selected['Premium'])
-                                        stop_loss_price = entry_premium * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        stop_loss_price = round(entry_premium * risk_multiplier, 2)
                                         max_loss = entry_premium * (risk_multiplier - 1) * 100
                                         
                                         stop_loss_order = trader.create_option_order(
@@ -4442,7 +4450,8 @@ with tabs[6]:
                                     elif selected_strategy == "IRON_CONDOR":
                                         # Risk: Close if total spread cost reaches 2x entry credit
                                         entry_credit = float(selected['NetCredit'])
-                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        stop_loss_debit = round(entry_credit * risk_multiplier, 2)
                                         max_loss = (stop_loss_debit - entry_credit) * 100
                                         
                                         stop_loss_order = trader.create_iron_condor_exit_order(
@@ -4469,7 +4478,8 @@ with tabs[6]:
                                     elif selected_strategy == "BULL_PUT_SPREAD":
                                         # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
                                         entry_credit = float(selected['NetCredit'])
-                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        stop_loss_debit = round(entry_credit * risk_multiplier, 2)
                                         max_loss = (stop_loss_debit - entry_credit) * 100
                                         
                                         stop_loss_order = trader.create_bull_put_spread_exit_order(
@@ -4494,7 +4504,8 @@ with tabs[6]:
                                     elif selected_strategy == "BEAR_CALL_SPREAD":
                                         # Risk: Close if total spread cost reaches 2x entry credit
                                         entry_credit = float(selected['NetCredit'])
-                                        stop_loss_debit = entry_credit * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        stop_loss_debit = round(entry_credit * risk_multiplier, 2)
                                         max_loss = (stop_loss_debit - entry_credit) * 100
                                         
                                         stop_loss_order = trader.create_bear_call_spread_exit_order(
@@ -4519,7 +4530,8 @@ with tabs[6]:
                                     elif selected_strategy == "COLLAR":
                                         # Risk: Close call if it reaches 2x entry premium
                                         call_entry = float(selected.get('CallPrem', 0))
-                                        call_stop_loss = call_entry * risk_multiplier
+                                        # Round to penny increments for Schwab API
+                                        call_stop_loss = round(call_entry * risk_multiplier, 2)
                                         
                                         stop_loss_order_call = trader.create_option_order(
                                         symbol=selected['Ticker'],
