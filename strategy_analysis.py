@@ -146,6 +146,14 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 r, ["openInterest", "oi", "open_interest", "OI"], 0), 0)
             vol = _safe_int(_get_num_from_row(
                 r, ["volume", "Volume", "vol"], 0), 0)
+            
+            # DEBUG: Print first few OI values to see what we're getting
+            if counters["oi_pass"] == 0 and counters["rows"] <= 5:
+                print(f"DEBUG OI check - Row {counters['rows']}: oi={oi}, vol={vol}, min_oi={min_oi}")
+                print(f"  Available columns: {list(r.index)}")
+                print(f"  Raw openInterest: {r.get('openInterest', 'NOT FOUND')}")
+                print(f"  Raw oi: {r.get('oi', 'NOT FOUND')}")
+            
             if min_oi and oi < int(min_oi):
                 continue
             counters["oi_pass"] += 1
