@@ -18,6 +18,16 @@ along with scan statistics (counters).
 
 import pandas as pd
 import numpy as np
+import logging
+import sys
+
+# Configure logging to output to stderr (which shows in terminal)
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    stream=sys.stderr,
+    force=True
+)
 import yfinance as yf
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -154,7 +164,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             
             # DEBUG: Log first 5 options that passed ROI to see OI filter decisions
             if counters["roi_pass"] <= 5:
-                print(f"[DEBUG] ROI-passed option #{counters['roi_pass']}: ticker={ticker}, strike={K}, OI={oi} (raw={oi_val}), min_oi={min_oi}, will_reject_OI={min_oi and oi_val == oi_val and oi < int(min_oi)}", flush=True)
+                logging.info(f"ROI-passed option #{counters['roi_pass']}: ticker={ticker}, strike={K}, OI={oi} (raw={oi_val}), min_oi={min_oi}, will_reject_OI={min_oi and oi_val == oi_val and oi < int(min_oi)}")
             
             # Only apply OI filter if we have valid data (not NaN)
             if min_oi and oi_val == oi_val and oi < int(min_oi):  # oi_val == oi_val checks for not NaN
@@ -311,13 +321,13 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             counters["final"] += 1
     
     # DEBUG: Print filter statistics
-    print(f"\n[DEBUG] {ticker} Filter Statistics:", flush=True)
-    print(f"  Total options examined: {counters['rows']}", flush=True)
-    print(f"  Passed premium filter: {counters['premium_pass']} ({100*counters['premium_pass']/max(1,counters['rows']):.1f}%)", flush=True)
-    print(f"  Passed OTM filter: {counters['otm_pass']} ({100*counters['otm_pass']/max(1,counters['rows']):.1f}%)", flush=True)
-    print(f"  Passed ROI filter: {counters['roi_pass']} ({100*counters['roi_pass']/max(1,counters['rows']):.1f}%)", flush=True)
-    print(f"  Passed OI filter: {counters['oi_pass']} ({100*counters['oi_pass']/max(1,counters['rows']):.1f}%)", flush=True)
-    print(f"  Final results: {counters['final']}\n", flush=True)
+    logging.info(f"\n{ticker} Filter Statistics:")
+    logging.info(f"  Total options examined: {counters['rows']}")
+    logging.info(f"  Passed premium filter: {counters['premium_pass']} ({100*counters['premium_pass']/max(1,counters['rows']):.1f}%)")
+    logging.info(f"  Passed OTM filter: {counters['otm_pass']} ({100*counters['otm_pass']/max(1,counters['rows']):.1f}%)")
+    logging.info(f"  Passed ROI filter: {counters['roi_pass']} ({100*counters['roi_pass']/max(1,counters['rows']):.1f}%)")
+    logging.info(f"  Passed OI filter: {counters['oi_pass']} ({100*counters['oi_pass']/max(1,counters['rows']):.1f}%)")
+    logging.info(f"  Final results: {counters['final']}\n")
     
     df = pd.DataFrame(rows)
     if not df.empty:
