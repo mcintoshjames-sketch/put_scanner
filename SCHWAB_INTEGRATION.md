@@ -89,7 +89,7 @@ I've successfully integrated the Schwab API into your put scanner using the `sch
    python app.py --tickers AAPL,MSFT,NVDA
    
    # Streamlit app
-   streamlit run streamlit_app.py
+   streamlit run strategy_lab.py
    ```
 
 ### Keep Using YFinance (Default)
@@ -140,12 +140,12 @@ Implementations:
 ### Data Flow
 
 ```
-streamlit_app.py
-    ↓
+strategy_lab.py
+   ↓
 app.py::analyze_puts()
-    ↓
+   ↓
 get_provider(provider_type)
-    ↓
+   ↓
 ├→ YFinanceProvider → yfinance library
 ├→ SchwabProvider → schwab-py → Schwab API
 └→ PolygonProvider → Polygon API

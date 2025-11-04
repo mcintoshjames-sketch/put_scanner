@@ -3698,6 +3698,27 @@ with tabs[6]:
                                 if abs(days_val) <= earnings_warning_threshold:
                                     st.warning(f"⚠️ Earnings in {int(abs(days_val))} days - proceed with caution")
                             
+                            # Guardrail: warn and require acknowledgement if MC expected P&L is negative
+                            mc_expected = None
+                            try:
+                                if selected is not None and ('MC_ExpectedPnL' in selected):
+                                    mc_expected = float(selected['MC_ExpectedPnL'])
+                            except Exception:
+                                mc_expected = None
+                            if mc_expected is not None and not pd.isna(mc_expected) and mc_expected < 0:
+                                st.warning(
+                                    f"🚧 Monte Carlo expected P&L for this position is negative (${mc_expected:,.2f}).\n\n"
+                                    "Previewing an order on a negative-expectation setup may not align with your risk rules."
+                                )
+                                proceed_key = "ack_negative_mc_preview"
+                                proceed_anyway = st.checkbox(
+                                    "I understand the MC expected P&L is negative and want to preview anyway",
+                                    key=proceed_key,
+                                )
+                                if not proceed_anyway:
+                                    st.info("Check the box above to preview anyway, or choose a different candidate.")
+                                    st.stop()
+                            
                             # Check if Schwab provider is active
                             if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE and PROVIDER == "schwab":
                                 # Get the underlying schwab client
@@ -4563,6 +4584,26 @@ with tabs[6]:
                                             schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
                                             if schwab_client:
                                                 trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                # Guardrail: warn and require acknowledgement if MC expected P&L is negative
+                                                mc_expected = None
+                                                try:
+                                                    if selected is not None and ('MC_ExpectedPnL' in selected):
+                                                        mc_expected = float(selected['MC_ExpectedPnL'])
+                                                except Exception:
+                                                    mc_expected = None
+                                                if mc_expected is not None and not pd.isna(mc_expected) and mc_expected < 0:
+                                                    st.warning(
+                                                        f"🚧 Monte Carlo expected P&L for this position is negative (${mc_expected:,.2f}).\n\n"
+                                                        "Previewing an order on a negative-expectation setup may not align with your risk rules."
+                                                    )
+                                                    proceed_key = "ack_negative_mc_entry"
+                                                    proceed_anyway = st.checkbox(
+                                                        "I understand the MC expected P&L is negative and want to preview anyway",
+                                                        key=proceed_key,
+                                                    )
+                                                    if not proceed_anyway:
+                                                        st.info("Check the box above to preview anyway, or choose a different candidate.")
+                                                        st.stop()
                                                 with st.spinner("Previewing entry order..."):
                                                     preview_result = trader.preview_order(order)
                                                 
@@ -4631,6 +4672,26 @@ with tabs[6]:
                                                     schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
                                                     if schwab_client:
                                                         trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                        # Guardrail: warn and require acknowledgement if MC expected P&L is negative
+                                                        mc_expected = None
+                                                        try:
+                                                            if selected is not None and ('MC_ExpectedPnL' in selected):
+                                                                mc_expected = float(selected['MC_ExpectedPnL'])
+                                                        except Exception:
+                                                            mc_expected = None
+                                                        if mc_expected is not None and not pd.isna(mc_expected) and mc_expected < 0:
+                                                            st.warning(
+                                                                f"🚧 Monte Carlo expected P&L for this position is negative (${mc_expected:,.2f}).\n\n"
+                                                                "Previewing an order on a negative-expectation setup may not align with your risk rules."
+                                                            )
+                                                            proceed_key = "ack_negative_mc_exit"
+                                                            proceed_anyway = st.checkbox(
+                                                                "I understand the MC expected P&L is negative and want to preview anyway",
+                                                                key=proceed_key,
+                                                            )
+                                                            if not proceed_anyway:
+                                                                st.info("Check the box above to preview anyway, or choose a different candidate.")
+                                                                st.stop()
                                                         with st.spinner("Previewing exit order..."):
                                                             preview_result = trader.preview_order(exit_order)
                                                         
@@ -4713,6 +4774,26 @@ with tabs[6]:
                                                 schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
                                                 if schwab_client:
                                                     trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                                    # Guardrail: warn and require acknowledgement if MC expected P&L is negative
+                                                    mc_expected = None
+                                                    try:
+                                                        if selected is not None and ('MC_ExpectedPnL' in selected):
+                                                            mc_expected = float(selected['MC_ExpectedPnL'])
+                                                    except Exception:
+                                                        mc_expected = None
+                                                    if mc_expected is not None and not pd.isna(mc_expected) and mc_expected < 0:
+                                                        st.warning(
+                                                            f"🚧 Monte Carlo expected P&L for this position is negative (${mc_expected:,.2f}).\n\n"
+                                                            "Previewing an order on a negative-expectation setup may not align with your risk rules."
+                                                        )
+                                                        proceed_key = "ack_negative_mc_stop"
+                                                        proceed_anyway = st.checkbox(
+                                                            "I understand the MC expected P&L is negative and want to preview anyway",
+                                                            key=proceed_key,
+                                                        )
+                                                        if not proceed_anyway:
+                                                            st.info("Check the box above to preview anyway, or choose a different candidate.")
+                                                            st.stop()
                                                     with st.spinner("Previewing stop-loss order..."):
                                                         preview_result = trader.preview_order(order_to_preview)
                                                     

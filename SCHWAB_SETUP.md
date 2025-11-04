@@ -98,7 +98,7 @@ export SCHWAB_API_KEY=your_key
 export SCHWAB_APP_SECRET=your_secret
 
 # Run Streamlit
-streamlit run streamlit_app.py
+streamlit run strategy_lab.py
 ```
 
 ## Switching Back to YFinance

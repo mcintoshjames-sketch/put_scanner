@@ -291,6 +291,24 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 bid_ask_spread_pct=spread_pct or 0.0
             )
 
+            # Quick Monte Carlo for expected P&L to enrich output and enable UI guardrails
+            try:
+                mc_params = dict(
+                    S0=S,
+                    days=D,
+                    iv=iv_for_calc,
+                    Kp=float(K),
+                    put_premium=float(prem),
+                    div_ps_annual=0.0,
+                    use_net_collateral=False,
+                )
+                mc_result = mc_pnl("CSP", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+                mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
+                mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+            except Exception:
+                mc_expected_pnl = float("nan")
+                mc_roi_ann = float("nan")
+
             rows.append({
                 "Strategy": "CSP",
                 "Ticker": ticker, "Price": round(S, 2), "Exp": exp, "Days": D,
@@ -312,6 +330,10 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 "Volume": vol,
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
+                
+                # Monte Carlo expected value (for guardrails and EV assessment)
+                "MC_ExpectedPnL": round(mc_expected_pnl, 2) if 'mc_expected_pnl' in locals() and mc_expected_pnl == mc_expected_pnl else float("nan"),
+                "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if 'mc_roi_ann' in locals() and mc_roi_ann == mc_roi_ann else float("nan"),
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
@@ -842,6 +864,28 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
         floor = (p_row["K"] - S) + net_credit
         cap_to_call = (c_row["K"] - S) + net_credit
 
+        # Quick Monte Carlo for expected P&L to enrich output and enable UI guardrails
+        try:
+            iv_c = float(c_row["iv"]) if c_row["iv"] == c_row["iv"] else 0.20
+            iv_p = float(p_row["iv"]) if p_row["iv"] == p_row["iv"] else 0.20
+            iv_mc = (iv_c + iv_p) / 2.0
+            mc_params = dict(
+                S0=S,
+                days=D,
+                iv=iv_mc,
+                Kc=float(c_row["K"]),
+                call_premium=float(call_prem),
+                Kp=float(p_row["K"]),
+                put_premium=float(put_debit),
+                div_ps_annual=float(div_ps_annual),
+            )
+            mc_result = mc_pnl("COLLAR", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+            mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
+            mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+        except Exception:
+            mc_expected_pnl = float("nan")
+            mc_roi_ann = float("nan")
+
         # Check expiration risk for Collar (2-leg strategy)
         exp_risk = check_expiration_risk(
             expiration_str=exp,
@@ -872,6 +916,10 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
             "DivInWindow": round(div_in_period, 4),
             "AssignRisk": bool(assign_risk),
             "Score": round(score, 6),
+            
+            # Monte Carlo expected value (for guardrails and EV assessment)
+            "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
+            "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
             
             # Expiration risk assessment
             "ExpType": exp_risk["expiration_type"],
@@ -1175,6 +1223,25 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
         # Apply all penalties to base score
         score = score * tenor_penalty * vol_penalty
         
+        # Quick Monte Carlo for expected P&L to enrich output and enable UI guardrails
+        try:
+            mc_params = dict(
+                S0=S,
+                days=D,
+                iv=iv_avg if (iv_avg == iv_avg and iv_avg > 0.0) else 0.20,
+                put_short_strike=float(Kps),
+                put_long_strike=float(Kpl),
+                call_short_strike=float(Kcs),
+                call_long_strike=float(Kcl),
+                net_credit=float(net_credit),
+            )
+            mc_result = mc_pnl("IRON_CONDOR", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+            mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
+            mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+        except Exception:
+            mc_expected_pnl = float("nan")
+            mc_roi_ann = float("nan")
+
         # Check expiration risk for Iron Condor (4-leg strategy - EXTREME sensitivity)
         exp_risk = check_expiration_risk(
             expiration_str=exp,
@@ -1228,6 +1295,10 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             
             "IV": round(iv_avg * 100.0, 2),
             "Score": round(score, 6),
+            
+            # Monte Carlo expected value (for guardrails and EV assessment)
+            "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
+            "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
             
             # Expiration risk assessment
             "ExpType": exp_risk["expiration_type"],

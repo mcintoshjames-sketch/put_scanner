@@ -27,7 +27,7 @@ python test_providers.py
 
 # Use it
 python app.py --tickers AAPL,MSFT
-streamlit run streamlit_app.py
+streamlit run strategy_lab.py
 ```
 
 ## Keep Using YFinance (No Change)
@@ -35,7 +35,7 @@ streamlit run streamlit_app.py
 Nothing changes! YFinance is still the default:
 ```bash
 python app.py --tickers AAPL,MSFT
-streamlit run streamlit_app.py
+streamlit run strategy_lab.py
 ```
 
 ## Files You Care About

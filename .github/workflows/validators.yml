@@ -31,3 +31,6 @@ jobs:
 
       - name: Run Monte Carlo validator
         run: python validate_monte_carlo.py
+
+      - name: Run trading smoke tests (pytest)
+        run: pytest -q tests/test_smoke_trading.py

@@ -101,7 +101,7 @@ def test_schwab_provider():
     print("  export OPTIONS_PROVIDER=schwab")
     print("  python app.py --tickers AAPL,MSFT")
     print("  # or")
-    print("  streamlit run streamlit_app.py")
+    print("  streamlit run strategy_lab.py")
     return True
 
 
