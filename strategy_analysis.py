@@ -152,9 +152,9 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             oi = _safe_int(oi_val, 0)
             vol = _safe_int(vol_val, 0)
             
-            # DEBUG: Log first 5 options to see what we're getting
+            # DEBUG: Log first 5 options that passed ROI to see OI filter decisions
             if counters["roi_pass"] <= 5:
-                print(f"DEBUG ROI#{counters['roi_pass']}: Strike={K}, OI_val={oi_val}, OI_int={oi}, min_oi={min_oi}, will_reject={min_oi and oi_val == oi_val and oi < int(min_oi)}")
+                print(f"[DEBUG] ROI-passed option #{counters['roi_pass']}: ticker={ticker}, strike={K}, OI={oi} (raw={oi_val}), min_oi={min_oi}, will_reject_OI={min_oi and oi_val == oi_val and oi < int(min_oi)}", flush=True)
             
             # Only apply OI filter if we have valid data (not NaN)
             if min_oi and oi_val == oi_val and oi < int(min_oi):  # oi_val == oi_val checks for not NaN
@@ -309,6 +309,16 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 "ExpAction": exp_risk["action"],
             })
             counters["final"] += 1
+    
+    # DEBUG: Print filter statistics
+    print(f"\n[DEBUG] {ticker} Filter Statistics:", flush=True)
+    print(f"  Total options examined: {counters['rows']}", flush=True)
+    print(f"  Passed premium filter: {counters['premium_pass']} ({100*counters['premium_pass']/max(1,counters['rows']):.1f}%)", flush=True)
+    print(f"  Passed OTM filter: {counters['otm_pass']} ({100*counters['otm_pass']/max(1,counters['rows']):.1f}%)", flush=True)
+    print(f"  Passed ROI filter: {counters['roi_pass']} ({100*counters['roi_pass']/max(1,counters['rows']):.1f}%)", flush=True)
+    print(f"  Passed OI filter: {counters['oi_pass']} ({100*counters['oi_pass']/max(1,counters['rows']):.1f}%)", flush=True)
+    print(f"  Final results: {counters['final']}\n", flush=True)
+    
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values(["Score", "ROI%_ann"], ascending=[
