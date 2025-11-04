@@ -154,7 +154,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             
             # DEBUG: Log first 5 options to see what we're getting
             if counters["roi_pass"] <= 5:
-                st.write(f"DEBUG ROI#{counters['roi_pass']}: Strike={K}, OI_val={oi_val}, OI_int={oi}, min_oi={min_oi}, will_reject={min_oi and oi_val == oi_val and oi < int(min_oi)}")
+                print(f"DEBUG ROI#{counters['roi_pass']}: Strike={K}, OI_val={oi_val}, OI_int={oi}, min_oi={min_oi}, will_reject={min_oi and oi_val == oi_val and oi < int(min_oi)}")
             
             # Only apply OI filter if we have valid data (not NaN)
             if min_oi and oi_val == oi_val and oi < int(min_oi):  # oi_val == oi_val checks for not NaN
