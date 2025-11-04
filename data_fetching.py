@@ -358,8 +358,9 @@ def check_expiration_risk(expiration_str: str, strategy: str = "CSP", open_inter
         warning_icon = "⛔"
     elif risk_level == "HIGH":
         if strat_info["multi_leg"]:
-            action = "BLOCK"  # Block high-risk multi-leg
-            warning_icon = "⛔"
+            # Weekly Friday for multi-leg gets WARN (allow user review), non-standard stays BLOCK
+            action = "WARN" if is_friday else "BLOCK"
+            warning_icon = "⚠️" if action == "WARN" else "⛔"
         else:
             action = "WARN"
             warning_icon = "⚠️"

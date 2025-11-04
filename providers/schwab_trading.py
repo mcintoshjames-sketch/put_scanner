@@ -1460,28 +1460,53 @@ class SchwabTrader:
             # Submit order via Schwab API
             schwab_client = self.client.client if hasattr(self.client, 'client') else self.client
             response = schwab_client.place_order(acct_id, order)
-            
-            # Parse response
-            order_data = response.json() if hasattr(response, 'json') else response
-            
-            # Extract order ID from response
-            # Schwab typically returns order ID in Location header or response body
+
+            # Gather response metadata up front
+            status_code = getattr(response, 'status_code', None)
+            headers = getattr(response, 'headers', {}) if hasattr(response, 'headers') else {}
+            text = None
+            order_data = None
+
+            # Try JSON first, then fall back to text
+            if hasattr(response, 'json'):
+                try:
+                    order_data = response.json()
+                except Exception:
+                    order_data = None
+            if order_data is None and hasattr(response, 'text'):
+                try:
+                    text = response.text
+                except Exception:
+                    text = None
+
+            # Extract order ID from Location header or JSON body
             order_id = None
-            if hasattr(response, 'headers') and 'Location' in response.headers:
-                # Extract order ID from Location header
-                # Format: https://api.schwabapi.com/trader/v1/accounts/{accountId}/orders/{orderId}
-                location = response.headers['Location']
+            if headers and 'Location' in headers:
+                location = headers['Location']
                 order_id = location.split('/')[-1] if '/' in location else None
-            elif isinstance(order_data, dict) and 'orderId' in order_data:
+            if order_id is None and isinstance(order_data, dict) and 'orderId' in order_data:
                 order_id = order_data['orderId']
-            
+
+            # Determine success: 200/201/202/204 or Location header present
+            success_statuses = {200, 201, 202, 204}
+            is_success = (status_code in success_statuses) or ('Location' in headers)
+
+            if not is_success:
+                # Build rich error and raise
+                err_msg = (
+                    f"Order submit failed: status={status_code}, "
+                    f"reason={getattr(response, 'reason_phrase', getattr(response, 'reason', ''))}, "
+                    f"location={headers.get('Location')}, body={(text[:500] if text else order_data)}"
+                )
+                raise RuntimeError(err_msg)
+
             # Clear preview cache after successful submission
             self._clear_preview(order)
-            
+
             # Save execution record to file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filepath = self.export_dir / f"order_executed_{timestamp}.json"
-            
+
             with open(filepath, "w") as f:
                 json.dump({
                     "timestamp": datetime.now().isoformat(),
@@ -1490,14 +1515,16 @@ class SchwabTrader:
                     "strategy_type": strategy_type,
                     "order": order,
                     "metadata": metadata or {},
-                    "response": order_data,
+                    "response": order_data if order_data is not None else {"status_code": status_code, "text": text},
+                    "headers": dict(headers) if headers else {},
                     "status": "LIVE_TRADE_EXECUTED"
                 }, f, indent=2)
-            
+
+            # Return a UI-friendly success status
             return {
-                "status": "executed",
+                "status": "success",
                 "order_id": order_id,
-                "response": order_data,
+                "response": order_data if order_data is not None else {"status_code": status_code, "text": text},
                 "filepath": str(filepath),
                 "message": f"✅ Order executed successfully. Order ID: {order_id}"
             }
@@ -1516,6 +1543,10 @@ class SchwabTrader:
                     "metadata": metadata or {},
                     "error": str(e),
                     "error_type": type(e).__name__,
+                    # Best-effort response context if present
+                    "response_status_code": getattr(locals().get('response', None), 'status_code', None),
+                    "response_headers": dict(getattr(locals().get('response', None), 'headers', {})) if locals().get('response', None) is not None and hasattr(locals().get('response', None), 'headers') else None,
+                    "response_text": getattr(locals().get('response', None), 'text', None) if locals().get('response', None) is not None and hasattr(locals().get('response', None), 'text') else None,
                     "status": "EXECUTION_FAILED"
                 }, f, indent=2)
             

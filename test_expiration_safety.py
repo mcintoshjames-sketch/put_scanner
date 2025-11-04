@@ -272,6 +272,24 @@ def test_action_determination():
 
 
 # ============================================================================
+# TEST 9.1: Multi-Leg Weekly Friday should be WARN (policy alignment)
+# ============================================================================
+def test_multileg_weekly_friday_warn():
+    """High-risk multi-leg on Weekly Friday should be WARN (not BLOCK)."""
+    print_test_header("Multi-Leg Weekly Friday = WARN")
+
+    test_date = "2025-11-07"  # Weekly Friday
+    result = check_expiration_risk(test_date, "Iron Condor", open_interest=600, bid_ask_spread_pct=4.0)
+
+    tests_passed = []
+    tests_passed.append(result["expiration_type"] == "Weekly (Friday)")
+    # Risk level may be HIGH depending on liquidity, but action must be WARN per policy
+    tests_passed.append(result["action"] == "WARN")
+
+    print_result(all(tests_passed), f"Weekly Friday multi-leg action = {result['action']}")
+    return all(tests_passed)
+
+# ============================================================================
 # TEST 9: Edge Cases
 # ============================================================================
 def test_edge_cases():
@@ -489,6 +507,7 @@ def run_all_tests():
         ("Low OI Risk Escalation", test_low_oi_escalation),
         ("Wide Spread Risk Escalation", test_wide_spread_escalation),
         ("Action Determination", test_action_determination),
+        ("Multi-Leg Weekly Friday = WARN", test_multileg_weekly_friday_warn),
         ("Edge Cases", test_edge_cases),
         ("Risk Factor Reporting", test_risk_factor_reporting),
         ("Warning Message Clarity", test_warning_messages),

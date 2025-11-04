@@ -677,8 +677,9 @@ def check_expiration_risk(expiration_str: str, strategy: str, open_interest: int
         warning_icon = "⛔"
     elif risk_level == "HIGH":
         if strat_info["multi_leg"]:
-            action = "BLOCK"  # Block high-risk multi-leg
-            warning_icon = "⛔"
+            # Weekly Friday for multi-leg gets WARN (allow user review), non-standard stays BLOCK
+            action = "WARN" if is_friday else "BLOCK"
+            warning_icon = "⚠️" if action == "WARN" else "⛔"
         else:
             action = "WARN"
             warning_icon = "⚠️"
@@ -2509,9 +2510,13 @@ if not allow_nonstandard:
         df_bear_call_spread = df_bear_call_spread[df_bear_call_spread["ExpAction"] != "BLOCK"].copy()
 
 if block_high_risk_multileg:
-    # Additional blocking for multi-leg strategies on non-standard dates
+    # Additional blocking for multi-leg strategies: allow Monthly and Weekly Fridays (WARN), block non-standard
     if not df_iron_condor.empty and "ExpAction" in df_iron_condor.columns:
-        df_iron_condor = df_iron_condor[df_iron_condor["ExpAction"] == "ALLOW"].copy()
+        # Keep ALLOW always; also keep WARN when it's Weekly (Friday)
+        keep_mask_ic = (df_iron_condor["ExpAction"] == "ALLOW")
+        if "ExpType" in df_iron_condor.columns:
+            keep_mask_ic = keep_mask_ic | ((df_iron_condor["ExpAction"] == "WARN") & (df_iron_condor["ExpType"] == "Weekly (Friday)"))
+        df_iron_condor = df_iron_condor[keep_mask_ic].copy()
     if not df_bull_put_spread.empty and "ExpAction" in df_bull_put_spread.columns and "ExpRisk" in df_bull_put_spread.columns:
         df_bull_put_spread = df_bull_put_spread[
             (df_bull_put_spread["ExpAction"] == "ALLOW") | 
@@ -3724,8 +3729,11 @@ with tabs[6]:
                                 # Get the underlying schwab client
                                 schwab_client = PROVIDER_INSTANCE.client if hasattr(PROVIDER_INSTANCE, 'client') else None
                                 if schwab_client:
-                                    # Initialize trader (NOT dry-run, we want to call API)
-                                    trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                    # Initialize or reuse live trader so preview cache persists across reruns
+                                    trader = st.session_state.get('_live_trader')
+                                    if (trader is None) or (getattr(trader, 'client', None) is not schwab_client) or getattr(trader, 'dry_run', True):
+                                        trader = SchwabTrader(dry_run=False, client=schwab_client)
+                                        st.session_state['_live_trader'] = trader
                                     
                                     # PRE-FLIGHT CHECKS based on strategy
                                     preflight_warnings = []
@@ -3879,7 +3887,12 @@ with tabs[6]:
                                             st.session_state['_previewed_order'] = order
                                             st.session_state['_previewed_order_hash'] = preview_result.get('order_hash')
                                             st.session_state['_previewed_strategy'] = selected_strategy
-                                            st.session_state['_preview_timestamp'] = preview_result.get('preview', {}).get('timestamp', 'N/A')
+                                            # Store both broker timestamp (if present) and local timestamp for safety checks
+                                            st.session_state['_preview_timestamp'] = preview_result.get('preview', {}).get('timestamp') or datetime.now().isoformat()
+                                            st.session_state['_previewed_at'] = datetime.now().isoformat()
+                                            # Debug visibility: show the exact order hash we will enforce at submit
+                                            if st.session_state.get('_previewed_order_hash'):
+                                                st.caption(f"🔒 Preview safety hash: {st.session_state['_previewed_order_hash']}")
                                             
                                             # Display preview details
                                             with st.expander("📊 Schwab Preview Response", expanded=True):
@@ -3922,9 +3935,8 @@ with tabs[6]:
                                             # Show info about submitting the previewed order
                                             st.info(
                                                 "✅ **Order Ready for Submission**\n\n"
-                                                "This previewed order is now stored and ready to submit. "
-                                                "Use the 'Generate Order' button below to submit it for live trading "
-                                                "or export it for dry-run mode.\n\n"
+                                                "This previewed order is now stored and ready. "
+                                                "Use the '📥 Generate Order Files' button to export files, then click the '🚀 Submit' button in the Generated Orders section to send live.\n\n"
                                                 "⏰ Preview expires in 30 minutes."
                                             )
                                         else:
@@ -3997,7 +4009,12 @@ with tabs[6]:
                             
                             schwab_client = PROVIDER_INSTANCE.client if (PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, 'client')) else None
                             if live_trading_enabled and schwab_client:
-                                trader = SchwabTrader(dry_run=False, client=schwab_client, export_dir="./trade_orders")
+                                # Reuse the same live trader used for preview so the safety cache is intact
+                                trader = st.session_state.get('_live_trader')
+                                if (trader is None) or (getattr(trader, 'client', None) is not schwab_client) or getattr(trader, 'dry_run', True):
+                                    from providers.schwab_trading import SchwabTrader as _SchwabTrader
+                                    trader = _SchwabTrader(dry_run=False, client=schwab_client, export_dir="./trade_orders")
+                                    st.session_state['_live_trader'] = trader
                                 st.warning("⚠️ **LIVE TRADING MODE** - Orders will be executed on your Schwab account!")
                             else:
                                 trader = SchwabTrader(dry_run=True, export_dir="./trade_orders")
@@ -4100,6 +4117,53 @@ with tabs[6]:
                                     "BEAR_CALL_SPREAD": "bear_call_spread"
                                 }
                                 strategy_type = strategy_type_map.get(selected_strategy, "unknown")
+                                # Ensure the live trader recognizes this order as previewed (handles rerun or new instance cases)
+                                try:
+                                    # Show current vs stored safety hashes and previewed status before restoration
+                                    current_hash = None
+                                    try:
+                                        if hasattr(trader, '_compute_order_hash'):
+                                            current_hash = trader._compute_order_hash(order)
+                                    except Exception:
+                                        current_hash = None
+                                    stored_hash = st.session_state.get('_previewed_order_hash')
+                                    if current_hash:
+                                        st.caption(f"🔍 Submit check: current order hash={current_hash}, stored preview hash={stored_hash}")
+                                    else:
+                                        if stored_hash:
+                                            st.caption(f"🔍 Submit check: stored preview hash={stored_hash}")
+                                    if hasattr(trader, '_is_previewed'):
+                                        try:
+                                            st.caption(f"🔍 Submit check: is_previewed(before)={trader._is_previewed(order)}")
+                                        except Exception:
+                                            pass
+                                    if live_trading_enabled and hasattr(trader, '_is_previewed') and not trader._is_previewed(order):
+                                        # If we have a recent preview timestamp, and it's within 30 minutes, re-register preview
+                                        from datetime import datetime, timedelta
+                                        ts_str = st.session_state.get('_previewed_at') or st.session_state.get('_preview_timestamp')
+                                        ok_to_restore = False
+                                        if ts_str:
+                                            try:
+                                                ts = datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
+                                                if datetime.now(tz=ts.tzinfo) - ts <= timedelta(minutes=30):
+                                                    ok_to_restore = True
+                                            except Exception:
+                                                # If parsing fails, be conservative and don't restore automatically
+                                                ok_to_restore = False
+                                        if ok_to_restore:
+                                            # Re-register this exact order as previewed on the current trader instance
+                                            if hasattr(trader, '_register_preview'):
+                                                trader._register_preview(order)
+                                                # Confirm restoration effect
+                                                try:
+                                                    if hasattr(trader, '_is_previewed'):
+                                                        st.caption(f"🔁 Preview restored: is_previewed(after)={trader._is_previewed(order)}")
+                                                except Exception:
+                                                    pass
+                                        else:
+                                            st.warning("⚠️ Preview cache not found or expired. Consider re-running 'Preview Order' before live submission.")
+                                except Exception:
+                                    pass
                             
                             # Validate order
                             validation = trader.validate_order(order)
@@ -4114,7 +4178,7 @@ with tabs[6]:
                                     for warning in validation['warnings']:
                                         st.warning(f"⚠️ {warning}")
                                 
-                                # Submit order (exports to file)
+                                # Prepare metadata (used for file export and later submit)
                                 metadata = {
                                     "scanner_data": {
                                         "strategy": selected_strategy,
@@ -4129,11 +4193,23 @@ with tabs[6]:
                                     },
                                     "source": f"strategy_lab_{strategy_type}_scanner"
                                 }
-                                
-                                result = trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
+                                # Export entry order to file; do NOT auto-submit in live mode
+                                if st.session_state.get("live_trading_enabled", False):
+                                    # Always export via a dry-run trader to avoid live submission here
+                                    try:
+                                        from providers.schwab_trading import SchwabTrader as _ExportTrader
+                                        export_trader = _ExportTrader(dry_run=True, export_dir="./trade_orders")
+                                        result = export_trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
+                                    except Exception:
+                                        # Fallback: if exporter fails, still surface a safe error
+                                        result = {"status": "error", "message": "Failed to export entry order for preview/submit"}
+                                else:
+                                    # Dry-run: normal export path
+                                    result = trader.submit_order(order, strategy_type=strategy_type, metadata=metadata)
                                 
                                 # Clear the previewed order from session state after submission
-                                if use_previewed_order and result['status'] in ['exported', 'success']:
+                                # Only clear preview cache after an actual live submission
+                                if use_previewed_order and result['status'] in ['success', 'executed']:
                                     st.session_state.pop('_previewed_order', None)
                                     st.session_state.pop('_previewed_order_hash', None)
                                     st.session_state.pop('_previewed_strategy', None)
@@ -4141,7 +4217,8 @@ with tabs[6]:
                                     if result['status'] == 'success':
                                         st.info("✅ Previewed order was successfully submitted and cleared from cache.")
                                 
-                                if result['status'] == 'exported':
+                                # Proceed with exit/stop generation for both dry-run exports and live success
+                                if result['status'] in ['exported', 'success']:
                                     # Now create the profit-taking exit order
                                     exit_order = None
                                     exit_result = None
@@ -4171,7 +4248,18 @@ with tabs[6]:
                                             "exit_price": exit_price,
                                             "profit_per_contract": (entry_premium - exit_price) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        # In live mode, preview exit instead of auto-submitting; in dry-run, export as before
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                exit_preview = trader.preview_order(exit_order)
+                                                st.session_state.preview_results['preview_exit'] = exit_preview
+                                                # For consistency with UI expecting a filepath, use preview artifact
+                                                exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                exit_result = None
+                                        else:
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "CC":
                                         # Exit: Buy to close at target price
@@ -4197,7 +4285,16 @@ with tabs[6]:
                                             "exit_price": exit_price,
                                             "profit_per_contract": (entry_premium - exit_price) * 100
                                         }
-                                        exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                exit_preview = trader.preview_order(exit_order)
+                                                st.session_state.preview_results['preview_exit'] = exit_preview
+                                                exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                exit_result = None
+                                        else:
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "COLLAR":
                                         # Exit: Close both legs atomically
@@ -4235,176 +4332,242 @@ with tabs[6]:
                                                 "net_exit": net_exit
                                             }
                                             
-                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                            if st.session_state.get("live_trading_enabled", False):
+                                                try:
+                                                    exit_preview = trader.preview_order(exit_order)
+                                                    st.session_state.preview_results['preview_exit'] = exit_preview
+                                                    exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                                except Exception as e:
+                                                    st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                    exit_result = None
+                                            else:
+                                                exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
                                         except Exception as e:
                                             st.error(f"❌ Error creating collar exit order: {str(e)}")
                                             import traceback
                                             st.code(traceback.format_exc())
                                             exit_result = None
                                     
-                                elif selected_strategy == "IRON_CONDOR":
-                                    # Exit: Close entire spread (all 4 legs) as net debit
-                                    entry_credit = float(selected['NetCredit'])
-                                    # Round to penny increments for Schwab API
-                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
-                                    
-                                    exit_order = trader.create_iron_condor_exit_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        long_put_strike=float(selected['PutLongStrike']),
-                                        short_put_strike=float(selected['PutShortStrike']),
-                                        short_call_strike=float(selected['CallShortStrike']),
-                                        long_call_strike=float(selected['CallLongStrike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=exit_debit,
-                                        duration="GOOD_TILL_CANCEL"
-                                    )
-                                    exit_metadata = {
-                                        **metadata,
-                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                        "entry_credit": entry_credit,
-                                        "exit_debit": exit_debit,
-                                        "profit_per_contract": (entry_credit - exit_debit) * 100
-                                    }
-                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
-                                    
-                                elif selected_strategy == "BULL_PUT_SPREAD":
-                                    # Exit: Close entire spread (both legs) as net debit
-                                    entry_credit = float(selected['NetCredit'])
-                                    # Round to penny increments for Schwab API
-                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
-                                    
-                                    exit_order = trader.create_bull_put_spread_exit_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        sell_strike=float(selected['SellStrike']),
-                                        buy_strike=float(selected['BuyStrike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=exit_debit,
-                                        duration="GOOD_TILL_CANCEL"
-                                    )
-                                    exit_metadata = {
-                                        **metadata,
-                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                        "entry_credit": entry_credit,
-                                        "exit_debit": exit_debit,
-                                        "profit_per_contract": (entry_credit - exit_debit) * 100
-                                    }
-                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
-                                    
-                                elif selected_strategy == "BEAR_CALL_SPREAD":
-                                    # Exit: Close entire spread (both legs) as net debit
-                                    entry_credit = float(selected['NetCredit'])
-                                    # Round to penny increments for Schwab API
-                                    exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
-                                    
-                                    exit_order = trader.create_bear_call_spread_exit_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        sell_strike=float(selected['SellStrike']),
-                                        buy_strike=float(selected['BuyStrike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=exit_debit,
-                                        duration="GOOD_TILL_CANCEL"
-                                    )
-                                    exit_metadata = {
-                                        **metadata,
-                                        "exit_trigger": f"{profit_capture_pct}% profit capture",
-                                        "entry_credit": entry_credit,
-                                        "exit_debit": exit_debit,
-                                        "profit_per_contract": (entry_credit - exit_debit) * 100
-                                    }
-                                    exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
-                                    
-                                # Generate stop-loss orders if requested
-                                stop_loss_order = None
-                                stop_loss_order_call = None
-                                stop_loss_result = None
-                                if generate_stop_loss:
-                                    if selected_strategy == "CSP":
-                                        # Risk: Close if option value reaches 2x entry premium (doubled loss)
-                                        entry_premium = float(selected['Premium'])
-                                        # Round to penny increments for Schwab API
-                                        stop_loss_price = round(entry_premium * risk_multiplier, 2)
-                                        max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
-                                        
-                                        stop_loss_order = trader.create_option_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        strike=float(selected['Strike']),
-                                        option_type="PUT",
-                                        action="BUY_TO_CLOSE",
-                                        quantity=int(num_contracts),
-                                        order_type="LIMIT",
-                                        limit_price=stop_loss_price,
-                                        duration="GOOD_TILL_CANCEL"
-                                        )
-                                        stop_loss_metadata = {
-                                        **metadata,
-                                        "order_type": "STOP_LOSS",
-                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                        "entry_premium": entry_premium,
-                                        "stop_loss_price": stop_loss_price,
-                                        "max_loss_per_contract": max_loss
-                                        }
-                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                    
-                                    elif selected_strategy == "CC":
-                                        # Risk: Close if option value reaches 2x entry premium
-                                        entry_premium = float(selected['Premium'])
-                                        # Round to penny increments for Schwab API
-                                        stop_loss_price = round(entry_premium * risk_multiplier, 2)
-                                        max_loss = entry_premium * (risk_multiplier - 1) * 100
-                                        
-                                        stop_loss_order = trader.create_option_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        strike=float(selected['Strike']),
-                                        option_type="CALL",
-                                        action="BUY_TO_CLOSE",
-                                        quantity=int(num_contracts),
-                                        order_type="LIMIT",
-                                        limit_price=stop_loss_price,
-                                        duration="GOOD_TILL_CANCEL"
-                                        )
-                                        stop_loss_metadata = {
-                                        **metadata,
-                                        "order_type": "STOP_LOSS",
-                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                        "entry_premium": entry_premium,
-                                        "stop_loss_price": stop_loss_price,
-                                        "max_loss_per_contract": max_loss
-                                        }
-                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                    
                                     elif selected_strategy == "IRON_CONDOR":
-                                        # Risk: Close if total spread cost reaches 2x entry credit
+                                        # Exit: Close entire spread (all 4 legs) as net debit
                                         entry_credit = float(selected['NetCredit'])
                                         # Round to penny increments for Schwab API
-                                        stop_loss_debit = round(entry_credit * risk_multiplier, 2)
-                                        max_loss = (stop_loss_debit - entry_credit) * 100
+                                        exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
                                         
-                                        stop_loss_order = trader.create_iron_condor_exit_order(
-                                        symbol=selected['Ticker'],
-                                        expiration=selected['Exp'],
-                                        long_put_strike=float(selected['PutLongStrike']),
-                                        short_put_strike=float(selected['PutShortStrike']),
-                                        short_call_strike=float(selected['CallShortStrike']),
-                                        long_call_strike=float(selected['CallLongStrike']),
-                                        quantity=int(num_contracts),
-                                        limit_price=stop_loss_debit,
-                                        duration="GOOD_TILL_CANCEL"
+                                        exit_order = trader.create_iron_condor_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            long_put_strike=float(selected['PutLongStrike']),
+                                            short_put_strike=float(selected['PutShortStrike']),
+                                            short_call_strike=float(selected['CallShortStrike']),
+                                            long_call_strike=float(selected['CallLongStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration="GOOD_TILL_CANCEL"
                                         )
-                                        stop_loss_metadata = {
-                                        **metadata,
-                                        "order_type": "STOP_LOSS",
-                                        "risk_trigger": f"{risk_multiplier}x max profit loss",
-                                        "entry_credit": entry_credit,
-                                        "stop_loss_debit": stop_loss_debit,
-                                        "max_loss_per_contract": max_loss
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
                                         }
-                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
-                                    
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                exit_preview = trader.preview_order(exit_order)
+                                                st.session_state.preview_results['preview_exit'] = exit_preview
+                                                exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                exit_result = None
+                                        else:
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        
+                                    elif selected_strategy == "BULL_PUT_SPREAD":
+                                        # Exit: Close entire spread (both legs) as net debit
+                                        entry_credit = float(selected['NetCredit'])
+                                        # Round to penny increments for Schwab API
+                                        exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
+                                        
+                                        exit_order = trader.create_bull_put_spread_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration="GOOD_TILL_CANCEL"
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
+                                        }
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                exit_preview = trader.preview_order(exit_order)
+                                                st.session_state.preview_results['preview_exit'] = exit_preview
+                                                exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                exit_result = None
+                                        else:
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        
+                                    elif selected_strategy == "BEAR_CALL_SPREAD":
+                                        # Exit: Close entire spread (both legs) as net debit
+                                        entry_credit = float(selected['NetCredit'])
+                                        # Round to penny increments for Schwab API
+                                        exit_debit = round(max(0.05, entry_credit * (1.0 - profit_capture_decimal)), 2)
+                                        
+                                        exit_order = trader.create_bear_call_spread_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            sell_strike=float(selected['SellStrike']),
+                                            buy_strike=float(selected['BuyStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=exit_debit,
+                                            duration="GOOD_TILL_CANCEL"
+                                        )
+                                        exit_metadata = {
+                                            **metadata,
+                                            "exit_trigger": f"{profit_capture_pct}% profit capture",
+                                            "entry_credit": entry_credit,
+                                            "exit_debit": exit_debit,
+                                            "profit_per_contract": (entry_credit - exit_debit) * 100
+                                        }
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                exit_preview = trader.preview_order(exit_order)
+                                                st.session_state.preview_results['preview_exit'] = exit_preview
+                                                exit_result = {"status": exit_preview.get('status'), "filepath": exit_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing exit order: {str(e)}")
+                                                exit_result = None
+                                        else:
+                                            exit_result = trader.submit_order(exit_order, strategy_type=f"{strategy_type}_exit", metadata=exit_metadata, skip_preview_check=True)
+                                        
+                                    # Generate stop-loss orders if requested
+                                    stop_loss_order = None
+                                    stop_loss_order_call = None
+                                    stop_loss_result = None
+                                    # Ensure metadata vars exist even if a branch errors mid-way
+                                    stop_loss_metadata = None
+                                    stop_loss_metadata_call = None
+                                    if generate_stop_loss:
+                                        if selected_strategy == "CSP":
+                                            # Risk: Close if option value reaches 2x entry premium (doubled loss)
+                                            entry_premium = float(selected['Premium'])
+                                            # Round to penny increments for Schwab API
+                                            stop_loss_price = round(entry_premium * risk_multiplier, 2)
+                                            max_loss = entry_premium * (risk_multiplier - 1) * 100  # per contract
+                                            
+                                            stop_loss_order = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            option_type="PUT",
+                                            action="BUY_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=stop_loss_price,
+                                            duration="GOOD_TILL_CANCEL"
+                                            )
+                                            stop_loss_metadata = {
+                                            **metadata,
+                                            "order_type": "STOP_LOSS",
+                                            "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                            "entry_premium": entry_premium,
+                                            "stop_loss_price": stop_loss_price,
+                                            "max_loss_per_contract": max_loss
+                                            }
+                                            if st.session_state.get("live_trading_enabled", False):
+                                                try:
+                                                    sl_preview = trader.preview_order(stop_loss_order)
+                                                    st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                    stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                                except Exception as e:
+                                                    st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                    stop_loss_result = None
+                                            else:
+                                                stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                        
+                                        elif selected_strategy == "CC":
+                                            # Risk: Close if option value reaches 2x entry premium
+                                            entry_premium = float(selected['Premium'])
+                                            # Round to penny increments for Schwab API
+                                            stop_loss_price = round(entry_premium * risk_multiplier, 2)
+                                            max_loss = entry_premium * (risk_multiplier - 1) * 100
+                                            
+                                            stop_loss_order = trader.create_option_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            strike=float(selected['Strike']),
+                                            option_type="CALL",
+                                            action="BUY_TO_CLOSE",
+                                            quantity=int(num_contracts),
+                                            order_type="LIMIT",
+                                            limit_price=stop_loss_price,
+                                            duration="GOOD_TILL_CANCEL"
+                                            )
+                                            stop_loss_metadata = {
+                                            **metadata,
+                                            "order_type": "STOP_LOSS",
+                                            "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                            "entry_premium": entry_premium,
+                                            "stop_loss_price": stop_loss_price,
+                                            "max_loss_per_contract": max_loss
+                                            }
+                                            if st.session_state.get("live_trading_enabled", False):
+                                                try:
+                                                    sl_preview = trader.preview_order(stop_loss_order)
+                                                    st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                    stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                                except Exception as e:
+                                                    st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                    stop_loss_result = None
+                                            else:
+                                                stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                        
+                                        elif selected_strategy == "IRON_CONDOR":
+                                            # Risk: Close if total spread cost reaches 2x entry credit
+                                            entry_credit = float(selected['NetCredit'])
+                                            # Round to penny increments for Schwab API
+                                            stop_loss_debit = round(entry_credit * risk_multiplier, 2)
+                                            max_loss = (stop_loss_debit - entry_credit) * 100
+                                            
+                                            stop_loss_order = trader.create_iron_condor_exit_order(
+                                            symbol=selected['Ticker'],
+                                            expiration=selected['Exp'],
+                                            long_put_strike=float(selected['PutLongStrike']),
+                                            short_put_strike=float(selected['PutShortStrike']),
+                                            short_call_strike=float(selected['CallShortStrike']),
+                                            long_call_strike=float(selected['CallLongStrike']),
+                                            quantity=int(num_contracts),
+                                            limit_price=stop_loss_debit,
+                                            duration="GOOD_TILL_CANCEL"
+                                            )
+                                            stop_loss_metadata = {
+                                            **metadata,
+                                            "order_type": "STOP_LOSS",
+                                            "risk_trigger": f"{risk_multiplier}x max profit loss",
+                                            "entry_credit": entry_credit,
+                                            "stop_loss_debit": stop_loss_debit,
+                                            "max_loss_per_contract": max_loss
+                                            }
+                                            if st.session_state.get("live_trading_enabled", False):
+                                                try:
+                                                    sl_preview = trader.preview_order(stop_loss_order)
+                                                    st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                    stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                                except Exception as e:
+                                                    st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                    stop_loss_result = None
+                                            else:
+                                                stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                        
                                     elif selected_strategy == "BULL_PUT_SPREAD":
                                         # Risk: Close if total spread cost reaches 2x entry credit (same as IC logic)
                                         entry_credit = float(selected['NetCredit'])
@@ -4429,7 +4592,16 @@ with tabs[6]:
                                         "stop_loss_debit": stop_loss_debit,
                                         "max_loss_per_contract": max_loss
                                         }
-                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                sl_preview = trader.preview_order(stop_loss_order)
+                                                st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                stop_loss_result = None
+                                        else:
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "BEAR_CALL_SPREAD":
                                         # Risk: Close if total spread cost reaches 2x entry credit
@@ -4455,7 +4627,16 @@ with tabs[6]:
                                         "stop_loss_debit": stop_loss_debit,
                                         "max_loss_per_contract": max_loss
                                         }
-                                        stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                sl_preview = trader.preview_order(stop_loss_order)
+                                                st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                stop_loss_result = None
+                                        else:
+                                            stop_loss_result = trader.submit_order(stop_loss_order, strategy_type=f"{strategy_type}_stop_loss", metadata=stop_loss_metadata, skip_preview_check=True)
                                     
                                     elif selected_strategy == "COLLAR":
                                         # Risk: Close call if it reaches 2x entry premium
@@ -4482,7 +4663,16 @@ with tabs[6]:
                                         "entry_premium": call_entry,
                                         "stop_loss_price": call_stop_loss
                                         }
-                                        stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
+                                        if st.session_state.get("live_trading_enabled", False):
+                                            try:
+                                                sl_preview = trader.preview_order(stop_loss_order_call)
+                                                st.session_state.preview_results['preview_stop_loss'] = sl_preview
+                                                stop_loss_result = {"status": sl_preview.get('status'), "filepath": sl_preview.get('filepath')}
+                                            except Exception as e:
+                                                st.error(f"❌ Error previewing stop-loss order: {str(e)}")
+                                                stop_loss_result = None
+                                        else:
+                                            stop_loss_result = trader.submit_order(stop_loss_order_call, strategy_type=f"{strategy_type}_stop_loss_call", metadata=stop_loss_metadata_call, skip_preview_check=True)
                                     
                                     # Display success message and files
                                     order_count = 2 if not generate_stop_loss else 3
@@ -4491,6 +4681,7 @@ with tabs[6]:
                                     st.session_state.generated_orders = {
                                         'entry_order': order,
                                         'entry_result': result,
+                                        'entry_metadata': metadata,
                                         'exit_order': exit_order,
                                         'exit_result': exit_result,
                                         'stop_loss_order': stop_loss_order if generate_stop_loss else None,
@@ -4501,7 +4692,10 @@ with tabs[6]:
                                         'strategy_type': strategy_type,
                                         'selected_strategy': selected_strategy,
                                         # Store collar-specific stop-loss if needed
-                                        'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None
+                                        'stop_loss_order_call': stop_loss_order_call if selected_strategy == "COLLAR" and generate_stop_loss else None,
+                                        # Keep metadata for potential submit actions later
+                                        'exit_metadata': exit_metadata if exit_order is not None else None,
+                                        'stop_loss_metadata': (stop_loss_metadata_call if (selected_strategy == "COLLAR" and generate_stop_loss) else (stop_loss_metadata if generate_stop_loss else None))
                                     }
                                     
                                     st.success(f"✅ {order_count} order files generated successfully!")
@@ -4571,8 +4765,12 @@ with tabs[6]:
                                 else:
                                     st.json(preview_data)
                         
-                        # Preview and download buttons
-                        col_preview_entry, col_dl_entry = st.columns(2)
+                        # Preview, submit (live only), and download buttons
+                        if st.session_state.get("live_trading_enabled", False):
+                            col_preview_entry, col_submit_entry, col_dl_entry = st.columns(3)
+                        else:
+                            col_preview_entry, col_dl_entry = st.columns(2)
+                            col_submit_entry = None
                         
                         with col_preview_entry:
                             if st.button("🔍 Preview", key="preview_entry_btn", width='stretch'):
@@ -4618,6 +4816,25 @@ with tabs[6]:
                                             st.error("Schwab provider not active")
                                     except Exception as e:
                                         st.error(f"Error: {str(e)}")
+                        if col_submit_entry is not None:
+                            with col_submit_entry:
+                                if st.button("🚀 Submit", key="submit_entry_btn", type="primary", width='stretch'):
+                                    try:
+                                        if 'preview_entry' not in st.session_state.preview_results:
+                                            st.warning("Preview the entry order first.")
+                                        else:
+                                            trader_live = st.session_state.get('_live_trader')
+                                            if trader_live is None:
+                                                st.error("Live trader not initialized. Enable live trading and preview again.")
+                                            else:
+                                                # Enforce preview safety (no skipping)
+                                                submit_res = trader_live.submit_order(order, strategy_type=orders_data['strategy_type'], metadata=orders_data.get('entry_metadata'), skip_preview_check=False)
+                                                if submit_res.get('status') == 'success':
+                                                    st.success(f"Entry order submitted. Order ID: {submit_res.get('order_id')}")
+                                                else:
+                                                    st.error(f"Entry submit status: {submit_res.get('status')}")
+                                    except Exception as e:
+                                        st.error(f"❌ Error submitting entry: {str(e)}")
                             
                             with col_dl_entry:
                                 with open(result['filepath'], 'r') as f:
@@ -4659,8 +4876,12 @@ with tabs[6]:
                                             else:
                                                 st.json(preview_data)
                                     
-                                    # Preview and download buttons
-                                    col_preview_exit, col_dl_exit = st.columns(2)
+                                    # Preview, submit and download buttons
+                                    if st.session_state.get("live_trading_enabled", False):
+                                        col_preview_exit, col_submit_exit, col_dl_exit = st.columns(3)
+                                    else:
+                                        col_preview_exit, col_dl_exit = st.columns(2)
+                                        col_submit_exit = None
                                     
                                     with col_preview_exit:
                                         if st.button("🔍 Preview", key="preview_exit_btn", width='stretch'):
@@ -4706,6 +4927,26 @@ with tabs[6]:
                                                     st.error("Schwab provider not active")
                                             except Exception as e:
                                                 st.error(f"Error: {str(e)}")
+                                    if col_submit_exit is not None:
+                                        with col_submit_exit:
+                                            if st.button("🚀 Submit", key="submit_exit_btn", type="primary", width='stretch'):
+                                                try:
+                                                    if 'preview_exit' not in st.session_state.preview_results:
+                                                        st.warning("Preview the exit order first.")
+                                                    else:
+                                                        # Use the persisted live trader if available
+                                                        trader_live = st.session_state.get('_live_trader')
+                                                        if trader_live is None:
+                                                            st.error("Live trader not initialized. Enable live trading and preview again.")
+                                                        else:
+                                                            # Enforce preview safety by not skipping the check
+                                                            submit_res = trader_live.submit_order(exit_order, strategy_type=f"{orders_data['strategy_type']}_exit", metadata=orders_data.get('exit_metadata'), skip_preview_check=False)
+                                                            if submit_res.get('status') == 'success':
+                                                                st.success(f"Exit order submitted. Order ID: {submit_res.get('order_id')}")
+                                                            else:
+                                                                st.error(f"Exit submit status: {submit_res.get('status')}")
+                                                except Exception as e:
+                                                    st.error(f"❌ Error submitting exit: {str(e)}")
                                     
                                     with col_dl_exit:
                                         with open(exit_result['filepath'], 'r') as f:
@@ -4758,8 +4999,12 @@ with tabs[6]:
                                         else:
                                             st.json(preview_data)
                                 
-                                # Preview and download buttons
-                                col_preview_stop, col_dl_stop = st.columns(2)
+                                # Preview, submit and download buttons
+                                if st.session_state.get("live_trading_enabled", False):
+                                    col_preview_stop, col_submit_stop, col_dl_stop = st.columns(3)
+                                else:
+                                    col_preview_stop, col_dl_stop = st.columns(2)
+                                    col_submit_stop = None
                                 
                                 with col_preview_stop:
                                     if st.button("🔍 Preview", key="preview_stop_loss_btn", width='stretch'):
@@ -4808,6 +5053,25 @@ with tabs[6]:
                                                 st.error("Schwab provider not active")
                                         except Exception as e:
                                             st.error(f"Error: {str(e)}")
+                                if col_submit_stop is not None:
+                                    with col_submit_stop:
+                                        if st.button("🚀 Submit", key="submit_stop_btn", type="primary", width='stretch'):
+                                            try:
+                                                if 'preview_stop_loss' not in st.session_state.preview_results:
+                                                    st.warning("Preview the stop-loss order first.")
+                                                else:
+                                                    trader_live = st.session_state.get('_live_trader')
+                                                    if trader_live is None:
+                                                        st.error("Live trader not initialized. Enable live trading and preview again.")
+                                                    else:
+                                                        order_to_submit = stop_loss_order_call if (isinstance(stop_loss_result, dict) and 'call' in stop_loss_result) else stop_loss_order
+                                                        submit_res = trader_live.submit_order(order_to_submit, strategy_type=f"{orders_data['strategy_type']}_stop_loss", metadata=orders_data.get('stop_loss_metadata'), skip_preview_check=False)
+                                                        if submit_res.get('status') == 'success':
+                                                            st.success(f"Stop-loss submitted. Order ID: {submit_res.get('order_id')}")
+                                                        else:
+                                                            st.error(f"Stop-loss submit status: {submit_res.get('status')}")
+                                            except Exception as e:
+                                                st.error(f"❌ Error submitting stop-loss: {str(e)}")
                                 
                                 with col_dl_stop:
                                     filepath = stop_loss_result['filepath'] if not isinstance(stop_loss_result, dict) or 'call' not in stop_loss_result else stop_loss_result['filepath']
