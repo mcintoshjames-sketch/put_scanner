@@ -5117,12 +5117,24 @@ with tabs[7]:
 
         # Render outputs (only if mc simulation was run)
         if mc is not None:
-            c1, c2, c3, c4 = st.columns(4)
+            # For Covered Calls, also show theoretical max loss (stock to zero)
+            if strat_choice == "CC":
+                div_ps_annual = float(row.get("DivAnnualPS", 0.0)) if "DivAnnualPS" in row else 0.0
+                div_ps_period = div_ps_annual * (float(days_for_mc) / 365.0)
+                max_loss_per_share = max(float(execution_price) - float(execution_premium) - div_ps_period, 0.0)
+                max_loss_contract = -100.0 * max_loss_per_share
+                c1, c2, c3, c4, c5 = st.columns(5)
+            else:
+                c1, c2, c3, c4 = st.columns(4)
+                max_loss_contract = None
+
             c1.metric("Expected P&L / contract", f"${mc['pnl_expected']:,.0f}")
             c2.metric("P&L (P5 / P50 / P95)",
                       f"${mc['pnl_p5']:,.0f} / ${mc['pnl_p50']:,.0f} / ${mc['pnl_p95']:,.0f}")
-            c3.metric("Worst path", f"${mc['pnl_min']:,.0f}")
+            c3.metric("Worst path (min)", f"${mc['pnl_min']:,.0f}")
             c4.metric("Collateral (capital)", f"${mc['collateral']:,.0f}")
+            if strat_choice == "CC" and max_loss_contract is not None:
+                c5.metric("Max theoretical loss", f"${max_loss_contract:,.0f}", help="Approx. P&L if stock → $0: −100×(Price − premium − dividends)")
 
             pnl = mc["pnl_paths"]
             bins = np.histogram_bin_edges(pnl, bins="auto")
@@ -5337,7 +5349,7 @@ with tabs[10]:
             y=alt.Y("Total_P&L:Q", title="Total P&L per contract (USD)"),
             tooltip=list(df_stress.columns),
         )
-    st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
         worst = float(df_stress["Total_P&L"].min())
         best = float(df_stress["Total_P&L"].max())
