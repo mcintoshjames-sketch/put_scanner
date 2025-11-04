@@ -413,8 +413,10 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
     T = days / 365.0
     # Ensure non-degenerate volatility for stochastic paths
     sigma = float(params.get("iv", 0.20))
+    # Clamp volatility to reasonable bounds to avoid numerical issues
     if not (sigma == sigma) or sigma <= 0.0:
         sigma = 0.20
+    sigma = max(1e-6, min(sigma, 3.0))
     rng = np.random.default_rng(seed)
     S_T = gbm_terminal_prices(S0, mu, sigma, T, n_paths, rng)
 
@@ -424,10 +426,14 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
     if strategy == "CSP":
         Kp = float(params["Kp"])
         Pp = float(params["put_premium"])
+        # Choose collateral base: full strike (default) or net of premium if requested
+        use_net_collateral = bool(params.get("use_net_collateral", False))
+        collateral_base = Kp - Pp if use_net_collateral else Kp
+        collateral_base = max(collateral_base, 1e-6)
         pnl_per_share = Pp - np.maximum(0.0, Kp - S_T)
-        # Add continuous risk-free interest on collateral
-        pnl_per_share += Kp * (np.exp(rf * T) - 1.0)
-        capital_per_share = Kp
+        # Add continuous risk-free interest on collateral base
+        pnl_per_share += collateral_base * (np.exp(rf * T) - 1.0)
+        capital_per_share = collateral_base
 
     elif strategy == "CC":
         Kc = float(params["Kc"])
@@ -474,7 +480,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         put_spread_width = Kps - Kpl
         call_spread_width = Kcl - Kcs
         max_spread_width = max(put_spread_width, call_spread_width)
-        capital_per_share = max_spread_width - net_credit
+        capital_per_share = max(max_spread_width - net_credit, 1e-6)
     
     elif strategy == "BULL_PUT_SPREAD":
         # Bull Put Spread: SELL higher strike put + BUY lower strike put = NET CREDIT
@@ -495,7 +501,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         
         # Capital at risk = max loss = spread width - net credit
         spread_width = sell_strike - buy_strike
-        capital_per_share = spread_width - net_credit
+        capital_per_share = max(spread_width - net_credit, 1e-6)
     
     elif strategy == "BEAR_CALL_SPREAD":
         # Bear Call Spread: SELL lower strike call + BUY higher strike call = NET CREDIT
@@ -516,7 +522,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         
         # Capital at risk = max loss = spread width - net credit
         spread_width = buy_strike - sell_strike
-        capital_per_share = spread_width - net_credit
+        capital_per_share = max(spread_width - net_credit, 1e-6)
     
     else:
         raise ValueError(f"Unknown strategy for MC: {strategy}")

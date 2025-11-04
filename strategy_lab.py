@@ -4994,6 +4994,13 @@ with tabs[7]:
             iv_raw = float(row.get("IV", float("nan")))
             iv = (iv_raw / 100.0) if (iv_raw ==
                                       iv_raw and iv_raw > 0.0) else 0.20
+            # Optional: model collateral as (strike - premium)
+            use_net_collateral = st.checkbox(
+                "Use net collateral (strike − premium)",
+                value=False,
+                key="mc_csp_use_net_collateral",
+                help="When enabled, collateral used in ROI is K − premium instead of K."
+            )
             params = dict(
                 S0=execution_price,  # Use overridden price
                 days=int(days_for_mc),
@@ -5001,6 +5008,7 @@ with tabs[7]:
                 Kp=float(row["Strike"]),
                 put_premium=execution_premium,  # Use overridden premium
                 div_ps_annual=0.0,
+                use_net_collateral=bool(use_net_collateral),
             )
             mc = mc_pnl("CSP", params, n_paths=int(paths), mu=float(
                 mc_drift), seed=seed, rf=float(t_bill_yield))
@@ -5405,8 +5413,22 @@ with tabs[11]:
             days_for_mc = max(1, days)
             iv_for_calc = iv_dec if (
                 iv_dec == iv_dec and iv_dec > 0.0) else 0.20
-            params = dict(S0=price, days=days_for_mc, iv=iv_for_calc,
-                          Kp=strike, put_premium=prem, div_ps_annual=0.0)
+            # Optional toggle for net collateral in quick overview
+            use_net_collateral_quick = st.checkbox(
+                "Use net collateral (strike − premium)",
+                value=False,
+                key="overview_csp_use_net_collateral",
+                help="When enabled, collateral used in ROI is K − premium instead of K."
+            )
+            params = dict(
+                S0=price,
+                days=days_for_mc,
+                iv=iv_for_calc,
+                Kp=strike,
+                put_premium=prem,
+                div_ps_annual=0.0,
+                use_net_collateral=bool(use_net_collateral_quick),
+            )
             mc = mc_pnl("CSP", params, n_paths=int(paths),
                         mu=0.0, seed=None, rf=float(t_bill_yield))
 
