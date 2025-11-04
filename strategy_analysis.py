@@ -143,7 +143,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             counters["roi_pass"] += 1
 
             oi = _safe_int(_get_num_from_row(
-                r, ["openInterest", "oi", "open_interest"], 0), 0)
+                r, ["openInterest", "oi", "open_interest", "OI"], 0), 0)
             vol = _safe_int(_get_num_from_row(
                 r, ["volume", "Volume", "vol"], 0), 0)
             if min_oi and oi < int(min_oi):
