@@ -2370,15 +2370,26 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
     def screen_single_ticker(ticker):
         """Screen a single ticker - designed for parallel execution"""
         try:
-            # Fetch basic stock data
+            # Prefer configured provider (Schwab/Polygon) for quotes/chain; fallback to yfinance
+            provider = None
+            try:
+                from providers import get_provider
+                provider = get_provider()
+            except Exception:
+                provider = None
+
+            # Fetch 3 months of history (for avg volume and HV) via yfinance for speed/availability
             stock = yf.Ticker(ticker)
             hist = stock.history(period="3mo")
 
             if hist.empty or len(hist) < 20:
                 return None
 
-            # Current price
-            current_price = hist['Close'].iloc[-1]
+            # Current price: prefer provider quote, else last close from yfinance
+            try:
+                current_price = float(provider.last_price(ticker)) if provider else float(hist['Close'].iloc[-1])
+            except Exception:
+                current_price = float(hist['Close'].iloc[-1])
             if current_price < min_price or current_price > max_price:
                 return None
 
@@ -2399,7 +2410,13 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                 return None
 
             # Check options availability and liquidity
-            expirations = stock.options
+            if provider is not None:
+                try:
+                    expirations = provider.expirations(ticker)
+                except Exception:
+                    expirations = []
+            else:
+                expirations = stock.options
             if not expirations or len(expirations) == 0:
                 return None
 
@@ -2434,63 +2451,123 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
 
             # Get option chain for suitable expiration
             try:
-                chain = stock.option_chain(suitable_exp)
+                if provider is not None:
+                    chain_df = provider.chain_snapshot_df(ticker, suitable_exp)
+                    if isinstance(chain_df, pd.DataFrame) and ('type' in chain_df.columns):
+                        type_lower = chain_df['type'].astype(str).str.lower()
+                        calls_df = chain_df[type_lower == 'call'].copy()
+                        puts_df = chain_df[type_lower == 'put'].copy()
+                    else:
+                        # Unexpected schema; treat as empty frames to skip
+                        calls_df = pd.DataFrame()
+                        puts_df = pd.DataFrame()
+                else:
+                    chain = stock.option_chain(suitable_exp)
+                    calls_df = chain.calls.copy()
+                    puts_df = chain.puts.copy()
 
-                # Find ATM strike for IV check
-                atm_idx = (chain.calls['strike'] -
-                           current_price).abs().idxmin()
-                atm_call = chain.calls.loc[atm_idx]
+                # Find ATM IV: prefer yfinance schema, then provider frames; coerce to float
+                iv_num = float('nan')
+                try:
+                    yf_chain = stock.option_chain(suitable_exp)
+                    if not yf_chain.calls.empty:
+                        atm_idx_yf = (yf_chain.calls['strike'] - current_price).abs().idxmin()
+                        iv_cand = yf_chain.calls.loc[atm_idx_yf].get('impliedVolatility', np.nan)
+                        try:
+                            iv_num = float(iv_cand)
+                        except Exception:
+                            iv_num = float('nan')
+                    if (np.isnan(iv_num) or iv_num <= 0) and not yf_chain.puts.empty:
+                        atm_put_idx_yf = (yf_chain.puts['strike'] - current_price).abs().idxmin()
+                        iv_cand2 = yf_chain.puts.loc[atm_put_idx_yf].get('impliedVolatility', np.nan)
+                        try:
+                            iv_num = float(iv_cand2)
+                        except Exception:
+                            iv_num = float('nan')
+                except Exception:
+                    pass
 
-                # Extract metrics
-                iv = atm_call.get('impliedVolatility', np.nan)
-                if pd.isna(iv) or iv <= 0:
-                    # Try to get IV from puts if calls missing
-                    atm_put_idx = (
-                        chain.puts['strike'] - current_price).abs().idxmin()
-                    atm_put = chain.puts.loc[atm_put_idx]
-                    iv = atm_put.get('impliedVolatility', np.nan)
+                if (np.isnan(iv_num) or iv_num <= 0) and not calls_df.empty:
+                    try:
+                        # Use position-based argmin to avoid duplicate-index surprises
+                        pos = np.abs(calls_df['strike'].to_numpy() - current_price).argmin()
+                        row = calls_df.iloc[int(pos)]
+                        # Try multiple IV column aliases
+                        for col in ['impliedVolatility', 'IV', 'iv', 'implied_volatility']:
+                            if col in row.index:
+                                try:
+                                    iv_num = float(pd.to_numeric(row[col], errors='coerce'))
+                                except Exception:
+                                    iv_num = float('nan')
+                                break
+                    except Exception:
+                        iv_num = float('nan')
+                if (np.isnan(iv_num) or iv_num <= 0) and not puts_df.empty:
+                    try:
+                        pos = np.abs(puts_df['strike'].to_numpy() - current_price).argmin()
+                        row = puts_df.iloc[int(pos)]
+                        for col in ['impliedVolatility', 'IV', 'iv', 'implied_volatility']:
+                            if col in row.index:
+                                try:
+                                    iv_num = float(pd.to_numeric(row[col], errors='coerce'))
+                                except Exception:
+                                    iv_num = float('nan')
+                                break
+                    except Exception:
+                        iv_num = float('nan')
 
-                if pd.isna(iv) or iv <= 0:
+                if np.isnan(iv_num) or iv_num <= 0:
                     return None
 
                 # UNIT CONSISTENCY FIX: Ensure IV is in decimal form (0.0-1.0)
                 # yfinance typically returns IV as decimal (e.g., 0.25 for 25%)
                 # but can vary by source. Normalize here.
-                if iv > 5.0:  # If IV > 5, it's likely already a percentage
-                    iv = iv / 100.0  # Convert to decimal
+                if iv_num > 5.0:  # If IV > 5, it's likely already a percentage
+                    iv_num = iv_num / 100.0  # Convert to decimal
 
-                iv_pct = iv * 100.0  # Now convert to percentage for display/comparison
+                iv_pct = iv_num * 100.0  # Now convert to percentage for display/comparison
 
                 # ===== IMPROVEMENT #2: Check multiple OTM strikes (CSP/CC sweet spot) =====
                 # CSP typically sells 5-15% OTM puts, CC sells 5-15% OTM calls
                 # Check strikes in this range for better liquidity signal
-                otm_puts = chain.puts[
-                    (chain.puts['strike'] >= current_price * 0.85) & 
-                    (chain.puts['strike'] <= current_price * 0.95)
-                ]
-                otm_calls = chain.calls[
-                    (chain.calls['strike'] >= current_price * 1.05) & 
-                    (chain.calls['strike'] <= current_price * 1.15)
-                ]
+                otm_puts = puts_df[
+                    (puts_df['strike'] >= current_price * 0.85) & 
+                    (puts_df['strike'] <= current_price * 0.95)
+                ] if not puts_df.empty else puts_df
+                otm_calls = calls_df[
+                    (calls_df['strike'] >= current_price * 1.05) & 
+                    (calls_df['strike'] <= current_price * 1.15)
+                ] if not calls_df.empty else calls_df
                 
+                # Helpers to robustly extract column maxima across provider schemas
+                def _col_max(df: pd.DataFrame, cols: list[str]) -> int:
+                    for c in cols:
+                        if c in df.columns:
+                            s = pd.to_numeric(df[c], errors='coerce').fillna(0)
+                            if not s.empty:
+                                m = float(s.max())
+                                if m == m and m > 0:
+                                    return int(m)
+                    return 0
+
+                def _best_metrics(df_puts: pd.DataFrame, df_calls: pd.DataFrame) -> tuple[int, int]:
+                    put_vol = _col_max(df_puts, ['volume', 'Volume', 'totalVolume']) if not df_puts.empty else 0
+                    put_oi = _col_max(df_puts, ['openInterest', 'oi', 'OpenInterest', 'OI']) if not df_puts.empty else 0
+                    call_vol = _col_max(df_calls, ['volume', 'Volume', 'totalVolume']) if not df_calls.empty else 0
+                    call_oi = _col_max(df_calls, ['openInterest', 'oi', 'OpenInterest', 'OI']) if not df_calls.empty else 0
+                    return max(put_vol, call_vol), max(put_oi, call_oi)
+
                 # Use BEST liquidity from OTM range (where actual trades happen)
-                if not otm_puts.empty:
-                    best_put_volume = otm_puts['volume'].max()
-                    best_put_oi = otm_puts['openInterest'].max()
-                else:
-                    best_put_volume = 0
-                    best_put_oi = 0
-                
-                if not otm_calls.empty:
-                    best_call_volume = otm_calls['volume'].max()
-                    best_call_oi = otm_calls['openInterest'].max()
-                else:
-                    best_call_volume = 0
-                    best_call_oi = 0
-                
-                # Use better of puts/calls for option metrics
-                opt_volume = max(best_put_volume, best_call_volume)
-                opt_oi = max(best_put_oi, best_call_oi)
+                opt_volume, opt_oi = _best_metrics(otm_puts, otm_calls)
+
+                # Fallback: if OTM windows are empty/zero, use ATM vicinity from full frames
+                if (opt_volume == 0 or opt_oi == 0) and (not puts_df.empty or not calls_df.empty):
+                    # Define a tighter band around ATM if OTM ranges yielded nothing
+                    near_puts = puts_df[(puts_df['strike'] >= current_price * 0.90) & (puts_df['strike'] <= current_price * 1.00)] if not puts_df.empty else puts_df
+                    near_calls = calls_df[(calls_df['strike'] >= current_price * 1.00) & (calls_df['strike'] <= current_price * 1.10)] if not calls_df.empty else calls_df
+                    vol_fb, oi_fb = _best_metrics(near_puts, near_calls)
+                    opt_volume = max(opt_volume, vol_fb)
+                    opt_oi = max(opt_oi, oi_fb)
 
                 if check_liquidity and (opt_volume < min_option_volume and opt_oi < min_option_volume * 10):
                     return None
@@ -2522,8 +2599,8 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                 for strikes_df in [otm_puts, otm_calls]:
                     if not strikes_df.empty:
                         for _, row in strikes_df.head(5).iterrows():  # Only check top 5 strikes
-                            bid = row.get('bid', 0) or 0
-                            ask = row.get('ask', 0) or 0
+                            bid = row.get('bid', 0) or row.get('Bid', 0) or 0
+                            ask = row.get('ask', 0) or row.get('Ask', 0) or 0
                             mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else 0
                             if mid > 0.05:  # Lowered from 0.10 - count options with $0.05+ premium
                                 spread_pcts.append((ask - bid) / mid * 100.0)
@@ -2551,38 +2628,38 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                 iv_hv_ratio = iv_pct / hv_30 if hv_30 > 0 else 1.0
 
                 # ===== IMPROVEMENT #3: Add Volume/OI ratio check =====
-                vol_oi_ratio = opt_volume / opt_oi if opt_oi > 0 else 0.0
+                vol_oi_ratio = (opt_volume / opt_oi) if (isinstance(opt_oi, (int, float)) and opt_oi > 0) else 0.0
 
                 # ===== IMPROVED QUALITY SCORE ALIGNED WITH STRATEGY SCORING =====
 
                 # 1. ROI Potential (35% weight in strategy)
-                # ===== IMPROVEMENT #5: Refined sweet spots aligned with actual strategies =====
-                # Premium/price ratio estimate: higher IV = higher premium
-                # Sweet spot: 15-45% IV for good premium without excessive risk (refined from 20-40)
-                if iv_pct < 15:
-                    roi_score = 0.5  # Too low for good premium (was ramping from 0)
-                elif iv_pct <= 45:  # Expanded sweet spot
-                    roi_score = 1.0
-                elif iv_pct <= 60:
-                    roi_score = 0.85  # Still tradeable (was declining to 0.5)
+                # Optimize for IV in 25-40% range; degrade below 20% and above 50%
+                if iv_pct < 20:
+                    roi_score = 0.45  # too little premium likely
+                elif iv_pct <= 40:
+                    roi_score = 1.0   # optimal premium vs risk
+                elif iv_pct <= 50:
+                    roi_score = 0.9   # still good but elevated risk
+                elif iv_pct <= 70:
+                    # linearly fade from 0.9 at 50% to ~0.5 at 70%
+                    roi_score = 0.9 - ((iv_pct - 50.0) / 20.0) * 0.4
                 else:
-                    # More gradual decline (was 0.25 floor)
-                    roi_score = 0.60 * max(0.4, (1.0 - (iv_pct - 60) / 80.0))
-                roi_score = max(0.3, roi_score)
+                    # very high IV -> keep a soft floor to avoid total dismissal
+                    roi_score = 0.45
+                roi_score = max(0.3, min(roi_score, 1.0))
 
                 # 2. Theta/Gamma Optimization (30% weight in strategy)
-                # ===== IMPROVEMENT #5: Tighter alignment with strategy theta/gamma zones =====
-                # HV 15-35% is optimal for theta/gamma ratio 0.8-3.0
-                # Refined thresholds to match actual strategy behavior
-                if hv_30 < 15:
-                    tg_score = 0.3  # Too low, no premium
-                elif hv_30 <= 35:  # Tightened sweet spot (was 20-35)
+                # Optimize for HV in 20-35% range; penalize too low or too high
+                if hv_30 < 20:
+                    tg_score = 0.35  # low premium regime
+                elif hv_30 <= 35:
                     tg_score = 1.0
                 elif hv_30 <= 50:
-                    tg_score = 0.85  # Less severe penalty (was 0.7)
+                    # fade from 1.0 at 35% to 0.8 at 50%
+                    tg_score = 1.0 - ((hv_30 - 35.0) / 15.0) * 0.2
                 else:
-                    # More gradual decline with higher floor
-                    tg_score = 0.70 * max(0.3, (1.0 - (hv_30 - 50) / 100.0))
+                    # elevated HV beyond 50%: downweight further but keep a floor
+                    tg_score = 0.65 * max(0.3, (1.0 - (hv_30 - 50.0) / 100.0))
                 tg_score = max(0.2, min(tg_score, 1.0))
 
                 # 3. Liquidity Score (20% weight in strategy)
@@ -2604,16 +2681,36 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                 liq_score = (0.5 * spread_score + 0.3 * volume_score + 0.2 * oi_score) * vol_oi_penalty
 
                 # 4. Cushion/Safety Score (15% weight in strategy)
-                # Stock volume and price stability
-                # Higher volume = easier to trade, better fills
-                # Max at 2M shares/day
-                vol_score = min(avg_volume / 2_000_000, 1.0)
+                # Use average volume and ATR% (14) as a light-weight stability proxy
+                vol_score = min(avg_volume / 2_000_000, 1.0)  # cap at 2M avg volume
 
-                # Check price stability (lower daily range = more predictable)
-                price_range_pct = ((hist['High'].iloc[-20:].mean() - hist['Low'].iloc[-20:].mean()) /
-                                   hist['Close'].iloc[-20:].mean() * 100.0)
-                # Penalize >10% daily ranges
-                stability_score = max(0.3, 1.0 - price_range_pct / 10.0)
+                try:
+                    highs = hist['High'].to_numpy(dtype=float, copy=False)
+                    lows = hist['Low'].to_numpy(dtype=float, copy=False)
+                    closes = hist['Close'].to_numpy(dtype=float, copy=False)
+                    prev_close = np.roll(closes, 1)
+                    tr = np.maximum(
+                        highs - lows,
+                        np.maximum(np.abs(highs - prev_close), np.abs(lows - prev_close))
+                    )
+                    tr = tr[1:]  # drop first (prev_close invalid)
+                    if len(tr) >= 14:
+                        atr14 = pd.Series(tr).rolling(14).mean().iloc[-1]
+                        close_ref = closes[-1] if len(closes) > 0 else np.nan
+                        atr_pct = (atr14 / close_ref) * 100.0 if (close_ref == close_ref and close_ref > 0) else np.nan
+                    else:
+                        atr_pct = float('nan')
+                except Exception:
+                    atr_pct = float('nan')
+
+                if atr_pct == atr_pct:
+                    # Scale: ATR% ~2% -> strong (close to 1), 10% -> weak (floor)
+                    stability_score = max(0.3, 1.0 - atr_pct / 10.0)
+                else:
+                    # Fallback to simple high-low range if ATR not available
+                    price_range_pct = ((hist['High'].iloc[-20:].mean() - hist['Low'].iloc[-20:].mean()) /
+                                       hist['Close'].iloc[-20:].mean() * 100.0)
+                    stability_score = max(0.3, 1.0 - price_range_pct / 10.0)
 
                 cushion_score = 0.6 * vol_score + 0.4 * stability_score
 
@@ -2668,8 +2765,8 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                     'IV/HV': round(iv_hv_ratio, 2),
                     'IV_Rank': iv_rank_proxy,
                     'Spread%': round(spread_pct, 1),
-                    'Opt_Volume': int(opt_volume),
-                    'Opt_OI': int(opt_oi),
+                    'Opt_Volume': int(opt_volume) if isinstance(opt_volume, (int, float)) and opt_volume == opt_volume else 0,
+                    'Opt_OI': int(opt_oi) if isinstance(opt_oi, (int, float)) and opt_oi == opt_oi else 0,
                     'Vol/OI': round(vol_oi_ratio, 2),
                     'Expirations': len(expirations),
                     'Sweet_Spot_DTEs': sweet_spot_count,  # Number of expirations in 21-60 DTE range
