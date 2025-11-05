@@ -2147,6 +2147,14 @@ with st.sidebar:
         help="Automatically block spreads and Iron Condors on non-standard expirations (RECOMMENDED)"
     )
 
+    # Risk/EV guardrail
+    require_nonneg_mc = st.checkbox(
+        "Require non-negative MC expected P&L",
+        value=True,
+        key="require_nonneg_mc",
+        help="Drops any candidates whose Monte Carlo expected P&L is negative. Keeps rows where MC couldn't be computed (NaN)."
+    )
+
     st.divider()
     st.subheader("Covered Call")
     min_otm_cc = st.slider("Min OTM % (CC)", 0.0, 20.0,
@@ -2371,6 +2379,22 @@ def run_scans(tickers, params):
     df_bcs = pd.concat(
         bcs_all, ignore_index=True) if bcs_all else pd.DataFrame()
 
+    # Optional hard filter: drop negative MC expected P&L rows across all strategies
+    if params.get("require_nonneg_mc", False):
+        def _apply_mc_filter(df: pd.DataFrame) -> pd.DataFrame:
+            if df is None or df.empty:
+                return df
+            if 'MC_ExpectedPnL' not in df.columns:
+                return df
+            return df[(df['MC_ExpectedPnL'].isna()) | (df['MC_ExpectedPnL'] >= 0)].reset_index(drop=True)
+
+        df_csp = _apply_mc_filter(df_csp)
+        df_cc = _apply_mc_filter(df_cc)
+        df_col = _apply_mc_filter(df_col)
+        df_ic = _apply_mc_filter(df_ic)
+        df_bps = _apply_mc_filter(df_bps)
+        df_bcs = _apply_mc_filter(df_bcs)
+
     return df_csp, df_cc, df_col, df_ic, df_bps, df_bcs, scan_counters
 
 
@@ -2401,7 +2425,8 @@ if run_btn:
             min_oi=int(min_oi), max_spread=float(max_spread),
             earn_window=int(earn_window), risk_free=float(risk_free),
             per_contract_cap=per_contract_cap,
-            bill_yield=float(t_bill_yield)
+            bill_yield=float(t_bill_yield),
+            require_nonneg_mc=bool(require_nonneg_mc)
         )
         try:
             with st.spinner("Scanning..."):

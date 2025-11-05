@@ -52,6 +52,89 @@ from options_math import (
 # These functions use Streamlit caching decorators and must stay in strategy_lab.py
 
 
+# ----------------------------- Unified Risk-Reward Scoring -----------------------------
+def _clip01(x: float) -> float:
+    try:
+        if x != x:
+            return 0.0
+        return max(0.0, min(1.0, float(x)))
+    except Exception:
+        return 0.0
+
+
+def _norm(x: float, lo: float, hi: float) -> float:
+    try:
+        if x != x:
+            return 0.0
+        if hi <= lo:
+            return 0.0
+        return _clip01((float(x) - lo) / (hi - lo))
+    except Exception:
+        return 0.0
+
+
+def unified_risk_reward_score(*, expected_roi_ann_dec: float | None,
+                              p5_pnl: float | None,
+                              capital: float | None,
+                              spread_pct: float | None,
+                              oi: float | None,
+                              volume: float | None,
+                              cushion_sigma: float | None) -> float:
+    """Compute a cross-strategy 0..1 score emphasizing risk-adjusted return.
+
+    Components (weights sum to 1.0):
+      - 0.50 Risk-adjusted expected return: MC expected annualized ROI (capped at 100%).
+      - 0.20 Downside robustness: penalize deep negative p5 MC P&L relative to capital.
+      - 0.20 Liquidity quality: tighter spreads and healthy vol/OI get higher scores.
+      - 0.10 Cushion: more standard deviations to key barrier improves score.
+    """
+    # 1) Expected annualized ROI (decimal) capped at 100%
+    roi_comp = _norm((expected_roi_ann_dec or 0.0), 0.0, 1.0)
+
+    # 2) Downside robustness via p5 P&L vs. capital
+    try:
+        cap = float(capital) if (capital is not None and capital == capital and capital > 0) else float('nan')
+        p5 = float(p5_pnl) if (p5_pnl is not None and p5_pnl == p5_pnl) else float('nan')
+        if cap == cap and p5 == p5:
+            # If p5 is >= 0, full credit. If negative, scale linearly down to -cap -> 0.0
+            downside = 1.0 if p5 >= 0 else max(0.0, 1.0 + (p5 / cap))
+        else:
+            downside = 0.5  # unknown -> neutral
+    except Exception:
+        downside = 0.5
+
+    # 3) Liquidity: spread and vol/OI
+    try:
+        sp = float(spread_pct) if (spread_pct is not None and spread_pct == spread_pct) else 20.0
+        # Map 0% spread -> 1.0, 20%+ -> 0.0
+        spread_score = _clip01(1.0 - min(max(sp, 0.0), 20.0) / 20.0)
+    except Exception:
+        spread_score = 0.5
+
+    try:
+        oi_val = float(oi) if (oi is not None and oi == oi and oi > 0) else float('nan')
+        vol_val = float(volume) if (volume is not None and volume == volume) else float('nan')
+        if oi_val == oi_val and vol_val == vol_val and oi_val > 0:
+            vol_oi_ratio = vol_val / oi_val
+            # 0 -> 0, 0.5 -> ~1. Clamp >= 0.5 to 1.0
+            voloi_score = _clip01(vol_oi_ratio / 0.5)
+        else:
+            voloi_score = 0.5
+    except Exception:
+        voloi_score = 0.5
+    liq_comp = 0.7 * spread_score + 0.3 * voloi_score
+
+    # 4) Cushion in sigmas (normalize 0..3σ)
+    try:
+        cush = float(cushion_sigma) if (cushion_sigma is not None and cushion_sigma == cushion_sigma) else float('nan')
+        cushion_comp = _norm(cush, 0.0, 3.0)
+    except Exception:
+        cushion_comp = 0.0
+
+    score = 0.50 * roi_comp + 0.20 * downside + 0.20 * liq_comp + 0.10 * cushion_comp
+    return round(_clip01(score), 6)
+
+
 def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, min_roi, min_cushion,
                 min_poew, earn_window, risk_free, per_contract_cap=None, bill_yield=0.0):
     # Import from data_fetching to avoid circular import
@@ -310,9 +393,27 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 mc_result = mc_pnl("CSP", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
                 mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
                 mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+                mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+                mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
             except Exception:
                 mc_expected_pnl = float("nan")
                 mc_roi_ann = float("nan")
+                mc_pnl_p5 = float("nan")
+                mc_roi_p5 = float("nan")
+
+            # Unified cross-strategy risk-reward score (0..1)
+            try:
+                rr_score = unified_risk_reward_score(
+                    expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                    p5_pnl=mc_pnl_p5,
+                    capital=collateral,
+                    spread_pct=spread_pct,
+                    oi=oi,
+                    volume=vol,
+                    cushion_sigma=cushion_sigma,
+                )
+            except Exception:
+                rr_score = float("nan")
 
             rows.append({
                 "Strategy": "CSP",
@@ -335,10 +436,13 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 "Volume": vol,
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
+                "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
                 
                 # Monte Carlo expected value (for guardrails and EV assessment)
                 "MC_ExpectedPnL": round(mc_expected_pnl, 2) if 'mc_expected_pnl' in locals() and mc_expected_pnl == mc_expected_pnl else float("nan"),
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if 'mc_roi_ann' in locals() and mc_roi_ann == mc_roi_ann else float("nan"),
+                "MC_PnL_p5": round(mc_pnl_p5, 2) if 'mc_pnl_p5' in locals() and mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+                "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if 'mc_roi_p5' in locals() and mc_roi_p5 == mc_roi_p5 else float("nan"),
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
@@ -583,6 +687,8 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 mc_result = mc_pnl("CC", mc_params, n_paths=1000, mu=0.07, seed=None, rf=risk_free)
                 mc_expected_pnl = mc_result['pnl_expected']
                 mc_roi_ann = mc_result['roi_ann_expected']
+                mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+                mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
                 
                 # ===== HARD FILTER: Negative MC expected P&L is intolerable =====
                 # Skip opportunities with negative expected value under realistic price paths
@@ -620,6 +726,22 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 # If MC simulation fails, set MC values to NaN but don't penalize score
                 mc_expected_pnl = float("nan")
                 mc_roi_ann = float("nan")
+                mc_pnl_p5 = float("nan")
+                mc_roi_p5 = float("nan")
+
+            # Unified cross-strategy risk-reward score (0..1)
+            try:
+                rr_score = unified_risk_reward_score(
+                    expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                    p5_pnl=mc_pnl_p5,
+                    capital=S * 100.0,
+                    spread_pct=spread_pct,
+                    oi=oi,
+                    volume=vol,
+                    cushion_sigma=cushion_sigma,
+                )
+            except Exception:
+                rr_score = float("nan")
 
             # Check expiration risk
             exp_risk = check_expiration_risk(
@@ -645,11 +767,14 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 "DivYld%": round(div_y * 100.0, 2),
                 "DaysToEarnings": days_to_earnings,
                 "Score": round(score, 6),
+                "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
                 "DivAnnualPS": round(div_ps_annual, 4),
                 
                 # Monte Carlo expected value (to assess realistic P&L)
                 "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
+                "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+                "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
@@ -902,9 +1027,33 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
             mc_result = mc_pnl("COLLAR", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
             mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
             mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+            mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+            mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
         except Exception:
             mc_expected_pnl = float("nan")
             mc_roi_ann = float("nan")
+            mc_pnl_p5 = float("nan")
+            mc_roi_p5 = float("nan")
+
+        # Unified risk-reward score
+        try:
+            # Use worst leg spread for spread component
+            avg_spread = max(float(c_row.get("spread%") or 20.0), float(p_row.get("spread%") or 20.0))
+            worst_oi = min(_safe_int(c_row["oi"], 0), _safe_int(p_row["oi"], 0))
+            worst_vol = min(_safe_int(c_row["volume"], 0), _safe_int(p_row["volume"], 0))
+            # Use min cushion as risk proxy
+            cushion_min = min(put_cushion, call_cushion) if (put_cushion == put_cushion and call_cushion == call_cushion) else float("nan")
+            rr_score = unified_risk_reward_score(
+                expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                p5_pnl=mc_pnl_p5,
+                capital=S * 100.0,
+                spread_pct=avg_spread,
+                oi=worst_oi,
+                volume=worst_vol,
+                cushion_sigma=cushion_min,
+            )
+        except Exception:
+            rr_score = float("nan")
 
         # Check expiration risk for Collar (2-leg strategy)
         exp_risk = check_expiration_risk(
@@ -936,10 +1085,14 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
             "DivInWindow": round(div_in_period, 4),
             "AssignRisk": bool(assign_risk),
             "Score": round(score, 6),
+            "Capital": int(S * 100.0),
+            "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
             
             # Monte Carlo expected value (for guardrails and EV assessment)
             "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
             "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
+            "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+            "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
             
             # Expiration risk assessment
             "ExpType": exp_risk["expiration_type"],
@@ -1271,9 +1424,32 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             mc_result = mc_pnl("IRON_CONDOR", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
             mc_expected_pnl = mc_result.get('pnl_expected', float("nan"))
             mc_roi_ann = mc_result.get('roi_ann_expected', float("nan"))
+            mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+            mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
         except Exception:
             mc_expected_pnl = float("nan")
             mc_roi_ann = float("nan")
+            mc_pnl_p5 = float("nan")
+            mc_roi_p5 = float("nan")
+
+        # Unified risk-reward score
+        try:
+            worst_oi = min(int(ps_row["oi"]) if ps_row["oi"] == ps_row["oi"] else 0,
+                           int(cs_row["oi"]) if cs_row["oi"] == cs_row["oi"] else 0)
+            worst_vol = min(int(ps_row["volume"]) if ps_row["volume"] == ps_row["volume"] else 0,
+                            int(cs_row["volume"]) if cs_row["volume"] == cs_row["volume"] else 0)
+            cushion_min = min(put_cushion, call_cushion) if (put_cushion == put_cushion and call_cushion == call_cushion) else float("nan")
+            rr_score = unified_risk_reward_score(
+                expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                p5_pnl=mc_pnl_p5,
+                capital=capital,
+                spread_pct=avg_spread,
+                oi=worst_oi,
+                volume=worst_vol,
+                cushion_sigma=cushion_min,
+            )
+        except Exception:
+            rr_score = float("nan")
 
         # Check expiration risk for Iron Condor (4-leg strategy - EXTREME sensitivity)
         exp_risk = check_expiration_risk(
@@ -1306,6 +1482,7 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             "NetCredit": round(net_credit, 2),
             "MaxLoss": round(max_loss, 2),
             "Capital": round(capital, 2),
+            "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
             
             "ROI%_ann": round(roi_ann * 100.0, 2),
             "ROI%_excess_bills": round(excess_vs_bills * 100.0, 2),
@@ -1332,6 +1509,8 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             # Monte Carlo expected value (for guardrails and EV assessment)
             "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
             "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
+            "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+            "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
             
             # Expiration risk assessment
             "ExpType": exp_risk["expiration_type"],
@@ -1594,7 +1773,8 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
             
             # Volume/OI penalty: check liquidity health on short leg
-            vol_oi_ratio = vol / ps["oi"] if (ps["oi"] > 0 and vol == vol) else 0.0
+            vol_val = ps.get("volume")
+            vol_oi_ratio = (vol_val / ps["oi"]) if (ps["oi"] > 0 and vol_val == vol_val) else 0.0
             if vol_oi_ratio >= 0.5:
                 vol_penalty = 1.0  # Healthy turnover
             elif vol_oi_ratio >= 0.25:
@@ -1639,6 +1819,8 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 mc_result = mc_pnl("BULL_PUT_SPREAD", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
                 mc_expected_pnl = mc_result['pnl_expected']
                 mc_roi_ann = mc_result['roi_ann_expected']
+                mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+                mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
                 
                 # Calculate MC penalty based on expected P&L vs max profit
                 max_profit = net_credit * 100.0
@@ -1662,6 +1844,8 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 mc_penalty = 0.70
                 mc_expected_pnl = float("nan")
                 mc_roi_ann = float("nan")
+                mc_pnl_p5 = float("nan")
+                mc_roi_p5 = float("nan")
             
             # Apply MC penalty with HIGH WEIGHT (70% contribution to final score)
             # This makes MC validation the DOMINANT factor
@@ -1678,6 +1862,20 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 open_interest=ps["oi"],  # Use short leg OI (typically worst case)
                 bid_ask_spread_pct=ps["spread%"] or 0.0
             )
+
+            # Unified cross-strategy risk-reward score (0..1)
+            try:
+                rr_score = unified_risk_reward_score(
+                    expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                    p5_pnl=mc_pnl_p5,
+                    capital=capital_at_risk,
+                    spread_pct=ps.get("spread%"),
+                    oi=ps.get("oi"),
+                    volume=ps.get("volume"),
+                    cushion_sigma=cushion_sigma,
+                )
+            except Exception:
+                rr_score = float("nan")
             
             rows.append({
                 "Strategy": "BullPutSpread",
@@ -1708,7 +1906,10 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 "DaysToEarnings": days_to_earnings,
                 "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
+                "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+                "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
                 "Score": round(score, 6),
+                "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
                 "BuyLeg": None,
@@ -1970,7 +2171,8 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             tenor_penalty = 1.0 if tenor_ok else 0.70  # 30% reduction outside sweet spot
             
             # Volume/OI penalty: check liquidity health on short leg
-            vol_oi_ratio = vol / cs["oi"] if (cs["oi"] > 0 and vol == vol) else 0.0
+            vol_val = cs.get("volume")
+            vol_oi_ratio = (vol_val / cs["oi"]) if (cs["oi"] > 0 and vol_val == vol_val) else 0.0
             if vol_oi_ratio >= 0.5:
                 vol_penalty = 1.0  # Healthy turnover
             elif vol_oi_ratio >= 0.25:
@@ -2015,6 +2217,8 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 mc_result = mc_pnl("BEAR_CALL_SPREAD", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
                 mc_expected_pnl = mc_result['pnl_expected']
                 mc_roi_ann = mc_result['roi_ann_expected']
+                mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))
+                mc_roi_p5 = mc_result.get('roi_ann_p5', float("nan"))
                 
                 # Calculate MC penalty based on expected P&L vs max profit
                 max_profit = net_credit * 100.0
@@ -2038,6 +2242,8 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 mc_penalty = 0.70
                 mc_expected_pnl = float("nan")
                 mc_roi_ann = float("nan")
+                mc_pnl_p5 = float("nan")
+                mc_roi_p5 = float("nan")
             
             # Apply MC penalty with HIGH WEIGHT (70% contribution to final score)
             # This makes MC validation the DOMINANT factor
@@ -2054,6 +2260,20 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 open_interest=cs["oi"],  # Use short leg OI (typically worst case)
                 bid_ask_spread_pct=cs["spread%"] or 0.0
             )
+
+            # Unified cross-strategy risk-reward score (0..1)
+            try:
+                rr_score = unified_risk_reward_score(
+                    expected_roi_ann_dec=mc_roi_ann if mc_roi_ann == mc_roi_ann else 0.0,
+                    p5_pnl=mc_pnl_p5,
+                    capital=capital_at_risk,
+                    spread_pct=cs.get("spread%"),
+                    oi=cs.get("oi"),
+                    volume=cs.get("volume"),
+                    cushion_sigma=cushion_sigma,
+                )
+            except Exception:
+                rr_score = float("nan")
             
             rows.append({
                 "Strategy": "BearCallSpread",
@@ -2084,7 +2304,10 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 "DaysToEarnings": days_to_earnings,
                 "MC_ExpectedPnL": round(mc_expected_pnl, 2) if mc_expected_pnl == mc_expected_pnl else float("nan"),
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
+                "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
+                "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
                 "Score": round(score, 6),
+                "RiskRewardScore": rr_score if rr_score == rr_score else float("nan"),
                 # Option symbols for order generation
                 "SellLeg": None,  # Will be populated by UI if needed
                 "BuyLeg": None,
