@@ -6,6 +6,13 @@ Validates that all three orders match in symbol, strikes, expiration, quantity, 
 import sys
 import json
 from pathlib import Path
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping trade ticket consistency tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 
 

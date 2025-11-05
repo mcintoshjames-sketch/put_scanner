@@ -33,6 +33,7 @@ import numpy as np
 import altair as alt
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from options_math import safe_annualize_roi
 
 
 # ----------------------------- Utils -----------------------------
@@ -950,7 +951,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
 
     with np.errstate(invalid="ignore", divide="ignore"):
         roi_cycle = pnl_contract / capital_contract
-        roi_ann = (1.0 + roi_cycle) ** (365.0 / days) - 1.0
+        roi_ann = safe_annualize_roi(roi_cycle, days)
 
     out = {
         "S_T": S_T,
@@ -1966,7 +1967,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = float(safe_annualize_roi(cycle_roi, max(1.0, ann_days)))
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Put_mark": put_now, "Put_P&L": pnl_put,
@@ -1991,7 +1992,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = float(safe_annualize_roi(cycle_roi, max(1.0, ann_days)))
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Call_mark": call_now, "Call_P&L": pnl_call,
@@ -2022,7 +2023,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = float(safe_annualize_roi(cycle_roi, max(1.0, ann_days)))
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Call_mark": call_now, "Put_mark": put_now,

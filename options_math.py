@@ -253,6 +253,40 @@ def compute_spread_pct(bid, ask, mid):
     return None  # None => unknown; don't auto-reject
 
 
+# ----------------------------- ROI Utilities -----------------------------
+
+def safe_annualize_roi(cycle_roi, days, clip_low: float = -50.0, clip_high: float = 700.0):
+    """
+    Numerically stable annualization of ROI for a cycle over `days` days.
+
+    Computes (1 + cycle_roi) ** (365 / days) - 1 using log1p/expm1 with clipping
+    to avoid overflow/underflow. Vectorized over `cycle_roi` (array-like or scalar).
+
+    Args:
+        cycle_roi: float or array-like of per-cycle ROI (e.g., P&L / capital)
+        days: int > 0, number of days in the cycle
+        clip_low: lower bound for the exponent's natural log (default -50)
+        clip_high: upper bound for the exponent's natural log (default 700)
+
+    Returns:
+        Annualized ROI, same shape as `cycle_roi`. Returns NaN when days <= 0,
+        or when (1 + cycle_roi) <= 0 (invalid base).
+    """
+    import numpy as _np
+
+    arr = _np.asarray(cycle_roi, dtype=float)
+    if days is None or float(days) <= 0.0:
+        out = _np.full_like(arr, _np.nan)
+        return out.item() if out.shape == () else out
+
+    base = 1.0 + arr
+    ln_base = _np.where(base > 0.0, _np.log1p(arr), _np.nan)
+    ln_val = (365.0 / float(days)) * ln_base
+    ln_val = _np.clip(ln_val, float(clip_low), float(clip_high))
+    out = _np.expm1(ln_val)
+    return out.item() if out.shape == () else out
+
+
 def trailing_dividend_info(ticker_obj, S):
     """
     Calculate trailing 12-month dividend information.
@@ -531,14 +565,9 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
     pnl_contract = 100.0 * pnl_per_share
     capital_contract = 100.0 * capital_per_share
 
-    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore", under="ignore"):
         roi_cycle = pnl_contract / capital_contract
-        # Guard against zero/negative day horizons which cause exponent blow-ups
-        if days <= 0:
-            # Annualized ROI is undefined for 0-day horizon; prefer NaN over infinities
-            roi_ann = np.full_like(roi_cycle, np.nan)
-        else:
-            roi_ann = (1.0 + roi_cycle) ** (365.0 / days) - 1.0
+        roi_ann = safe_annualize_roi(roi_cycle, days)
 
     out = {
         "S_T": S_T,

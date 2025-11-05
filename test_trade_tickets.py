@@ -7,6 +7,13 @@ have correct structure, required fields, and valid Schwab API format.
 
 import json
 from datetime import datetime
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping trade ticket tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 
 

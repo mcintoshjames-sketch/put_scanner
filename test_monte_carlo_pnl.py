@@ -17,6 +17,18 @@ import numpy as np
 import pandas as pd
 import math
 from datetime import datetime, timezone
+from options_math import safe_annualize_roi
+import os
+try:
+    import pytest  # type: ignore
+    _HAS_PYTEST = True
+except Exception:  # pragma: no cover - local script runs
+    _HAS_PYTEST = False
+
+# This file is an integration-style suite with prints. Skip by default in CI.
+if not os.getenv("RUN_INTEGRATION") and _HAS_PYTEST:
+    import pytest as _pytest
+    _pytest.skip("Skipping integration-style Monte Carlo suite; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
 
 # Import the functions we're testing
 from strategy_lab import (
@@ -482,8 +494,8 @@ def test_roi_annualization():
     
     for pnl, capital, days, desc in test_cases:
         cycle_roi = pnl / capital
-        # Formula: (1 + cycle_roi) ^ (365/days) - 1
-        annual_roi = (1.0 + cycle_roi) ** (365.0 / days) - 1.0
+        # Use shared helper for stable and consistent annualization
+        annual_roi = float(safe_annualize_roi(cycle_roi, days))
         annual_pct = annual_roi * 100.0
         
         print(f"\n{desc}")

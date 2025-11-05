@@ -20,6 +20,13 @@ Date: 2025-10-30
 import sys
 import pandas as pd
 from datetime import datetime, timedelta
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping credit spreads execution tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 
 

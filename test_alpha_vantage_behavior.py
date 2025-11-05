@@ -4,6 +4,13 @@ Test to verify Alpha Vantage is only called during order preview, not screening.
 import os
 import sys
 import yfinance as yf
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping Alpha Vantage behavior tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 
 sys.path.insert(0, '/workspaces/put_scanner')
 

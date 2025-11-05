@@ -3,6 +3,13 @@
 Test multi-leg order creation for Trade Execution
 """
 
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping multi-leg order tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 import json
 

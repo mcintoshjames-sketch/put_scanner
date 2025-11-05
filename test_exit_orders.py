@@ -6,6 +6,13 @@ Validates that exit orders are properly created based on runbook profit targets.
 import sys
 import json
 from pathlib import Path
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping exit order tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 
 

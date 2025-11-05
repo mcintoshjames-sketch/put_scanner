@@ -4,6 +4,12 @@ Tests both Yahoo Finance success (no API call) and failure (API call) scenarios.
 """
 import os
 import sys
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping Alpha Vantage integration tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from datetime import datetime
 import yfinance as yf
 

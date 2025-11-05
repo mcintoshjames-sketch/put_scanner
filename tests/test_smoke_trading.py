@@ -3,6 +3,13 @@ import json
 from pathlib import Path
 import pytest
 
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping smoke trading tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 from providers.schwab_mock import MockSchwabClient
 

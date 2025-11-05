@@ -23,6 +23,7 @@ import os
 # Import the functions we're testing
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from strategy_lab import mc_pnl
+from options_math import safe_annualize_roi
 
 
 class TestOrderStructureSafety(unittest.TestCase):
@@ -291,7 +292,7 @@ class TestMonteCarloPnL(unittest.TestCase):
         # ROI annualized = (1 + 0.6667) ^ (365/45) - 1
         
         expected_roi_cycle = 200.0 / 300.0
-        expected_roi_ann = (1 + expected_roi_cycle) ** (365.0 / 45.0) - 1.0
+        expected_roi_ann = float(safe_annualize_roi(expected_roi_cycle, 45.0))
         
         # The p95 should be close to max ROI for OTM spreads
         p95_roi = result["roi_ann_p95"]

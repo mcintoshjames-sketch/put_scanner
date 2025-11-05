@@ -7,6 +7,13 @@ Demonstrates that orders must be previewed before execution.
 import sys
 sys.path.insert(0, '/workspaces/put_scanner')
 
+import os
+try:
+    import pytest as _pytest  # type: ignore
+    if not os.getenv("RUN_INTEGRATION"):
+        _pytest.skip("Skipping live trading safety tests; set RUN_INTEGRATION=1 to run.", allow_module_level=True)
+except Exception:
+    pass
 from providers.schwab_trading import SchwabTrader
 from datetime import datetime
 

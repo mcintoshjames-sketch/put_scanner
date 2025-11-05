@@ -60,6 +60,7 @@ from options_math import (
     get_earnings_date,
     gbm_terminal_prices,
     mc_pnl,
+    safe_annualize_roi as _safe_annualize_roi,
     _bs_d1_d2,  # Helper function for d1/d2 calculations
     _norm_cdf   # Normal CDF helper
 )
@@ -1529,7 +1530,6 @@ def build_runbook(strategy, row, *, contracts=1, capture_pct=0.70,
 
     return "\n".join(lines)
 
-
 # ---------- Stress Test engine ----------
 def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
                iv_down_shift=0.10, iv_up_shift=0.00):
@@ -1573,7 +1573,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Put_mark": put_now, "Put_P&L": pnl_put,
@@ -1598,7 +1598,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Call_mark": call_now, "Call_P&L": pnl_call,
@@ -1629,7 +1629,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             # For annualization: if horizon=0 (immediate), use remaining time T0 in years
             # Otherwise use horizon_days
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Call_mark": call_now, "Put_mark": put_now,
@@ -1687,7 +1687,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             
             cycle_roi = total / capital if capital > 0 else 0.0
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             
             out.append({
                 "Shock%": sp, "Price": S1,
@@ -1726,7 +1726,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             
             cycle_roi = total / capital if capital > 0 else 0.0
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             
             out.append({
                 "Shock%": sp, "Price": S1,
@@ -1764,7 +1764,7 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             
             cycle_roi = total / capital if capital > 0 else 0.0
             ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
-            ann_roi = (1.0 + cycle_roi) ** (365.0 / max(1.0, ann_days)) - 1.0
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
             
             out.append({
                 "Shock%": sp, "Price": S1,
