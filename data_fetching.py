@@ -141,32 +141,89 @@ def _safe_int(x, default=0):
     except Exception:
         return default
 
-def effective_credit(bid, ask, last=None, alpha=0.25):
+def _dynamic_alpha_from_spread(bid, ask, default=0.25):
     """
-    Realistic credit for SELL orders: bid + alpha*(ask-bid).
-    alpha ~ 0.25 for liquid names; falls back to 0.95*last if no quotes.
+    Compute a liquidity-aware alpha based on bid-ask spread percentage.
+    Tighter spreads => alpha closer to 0.5 (near mid), wider spreads => alpha near 0.05 (near bid).
+
+    Returns an alpha in [0.05, 0.5]. Falls back to `default` if inputs are invalid.
     """
     b = _safe_float(bid)
     a = _safe_float(ask)
-    l = _safe_float(last, 0.0)
     if b == b and a == a and b > 0 and a > 0 and a >= b:
-        return b + alpha * (a - b)
-    if l == l and l > 0:
+        mid = (a + b) / 2.0
+        if mid > 0:
+            spread_pct = ((a - b) / mid) * 100.0
+            alpha = 0.5 - 0.04 * float(spread_pct)
+            if alpha < 0.05:
+                alpha = 0.05
+            if alpha > 0.5:
+                alpha = 0.5
+            return alpha
+    return default
+
+
+def effective_credit(bid, ask, last=None, alpha=None, *, oi: int | None = None,
+                     volume: int | None = None, dte: int | None = None,
+                     aggressiveness: str | None = None):
+    """
+    Liquidity-aware credit for SELL orders: bid + alpha*(ask-bid).
+    If alpha is None, a spread-based dynamic alpha is used.
+    Falls back to 0.95*last if no quotes.
+    """
+    try:
+        from utils import effective_credit as _eff_credit  # centralized logic
+        # pull UI preset if not explicitly provided
+        if aggressiveness is None:
+            try:
+                import streamlit as _st  # type: ignore
+                aggressiveness = _st.session_state.get('pricing_aggressiveness')
+            except Exception:
+                pass
+        return _eff_credit(bid, ask, last, alpha=alpha, oi=oi, volume=volume, dte=dte, aggressiveness=aggressiveness)
+    except Exception:
+        # Minimal fallback (static alpha=0.25) if utils unavailable
+        b = _safe_float(bid)
+        a = _safe_float(ask)
+        l = _safe_float(last, 0.0)
+        _alpha = 0.25 if alpha is None else float(alpha)
+        if b == b and a == a and b > 0 and a > 0 and a >= b:
+            return b + _alpha * (a - b)
+        if l == l and l > 0:
+            return 0.95 * l
+        return float("nan")
         return 0.95 * l
     return float("nan")
 
 
-def effective_debit(bid, ask, last=None, alpha=0.25):
+def effective_debit(bid, ask, last=None, alpha=None, *, oi: int | None = None,
+                    volume: int | None = None, dte: int | None = None,
+                    aggressiveness: str | None = None):
     """
-    Realistic debit for BUY orders: ask - alpha*(ask-bid).
+    Liquidity-aware debit for BUY orders: ask - alpha*(ask-bid).
+    If alpha is None, a spread-based dynamic alpha is used.
     Falls back to 1.05*last if no quotes.
     """
-    b = _safe_float(bid)
-    a = _safe_float(ask)
-    l = _safe_float(last, 0.0)
-    if b == b and a == a and b > 0 and a > 0 and a >= b:
-        return a - alpha * (a - b)
-    if l == l and l > 0:
+    try:
+        from utils import effective_debit as _eff_debit  # centralized logic
+        if aggressiveness is None:
+            try:
+                import streamlit as _st  # type: ignore
+                aggressiveness = _st.session_state.get('pricing_aggressiveness')
+            except Exception:
+                pass
+        return _eff_debit(bid, ask, last, alpha=alpha, oi=oi, volume=volume, dte=dte, aggressiveness=aggressiveness)
+    except Exception:
+        # Minimal fallback (static alpha=0.25) if utils unavailable
+        b = _safe_float(bid)
+        a = _safe_float(ask)
+        l = _safe_float(last, 0.0)
+        _alpha = 0.25 if alpha is None else float(alpha)
+        if b == b and a == a and b > 0 and a > 0 and a >= b:
+            return a - _alpha * (a - b)
+        if l == l and l > 0:
+            return 1.05 * l
+        return float("nan")
         return 1.05 * l
     return float("nan")
 

@@ -121,7 +121,12 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])  # may be NaN
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])  # may be NaN
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest", "OI"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             if prem != prem or prem <= 0:
                 continue
             counters["premium_pass"] += 1
@@ -422,7 +427,12 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])  # may be NaN
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])  # may be NaN
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest", "OI"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             if prem != prem or prem <= 0:
                 continue
             counters["premium_pass"] += 1
@@ -729,7 +739,11 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
                 prem = effective_credit(
                     _get_num_from_row(r, ["bid", "Bid", "b"]),
                     _get_num_from_row(r, ["ask", "Ask", "a"]),
-                    _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]))
+                    _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]),
+                    oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0),
+                    volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                    dte=D
+                )
                 if prem != prem or prem <= 0:
                     continue
                 spread_pct = compute_spread_pct(
@@ -756,10 +770,12 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
                 if iv == iv and iv > 3.0:
                     iv = iv / 100.0
                 pdlt = put_delta(S, K, risk_free, iv, T, div_y)
-                prem = effective_debit(
-                    _get_num_from_row(r, ["bid", "Bid", "b"]),
-                    _get_num_from_row(r, ["ask", "Ask", "a"]),
-                    _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]))
+                bidv = _get_num_from_row(r, ["bid", "Bid", "b"])
+                askv = _get_num_from_row(r, ["ask", "Ask", "a"])
+                lastv = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
+                oi_v = _safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0)
+                vol_v = _safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0)
+                prem = effective_debit(bidv, askv, lastv, oi=oi_v, volume=vol_v, dte=D)
                 if prem != prem or prem <= 0:
                     continue
                 spread_pct = compute_spread_pct(
@@ -1010,7 +1026,12 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             
             if prem != prem or prem <= 0:
                 continue
@@ -1039,7 +1060,12 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             
             if prem != prem or prem <= 0:
                 continue
@@ -1098,16 +1124,18 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
         pl_bid = _get_num_from_row(pl_row, ["bid", "Bid", "b"])
         pl_ask = _get_num_from_row(pl_row, ["ask", "Ask", "a"])
         pl_last = _get_num_from_row(pl_row, ["lastPrice", "last", "mark", "mid"])
-        pl_prem = effective_debit(pl_bid, pl_ask, pl_last)
         pl_oi = _safe_int(_get_num_from_row(pl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+        pl_vol = _safe_int(_get_num_from_row(pl_row, ["volume", "Volume", "vol"], 0), 0)
+        pl_prem = effective_debit(pl_bid, pl_ask, pl_last, oi=pl_oi, volume=pl_vol, dte=D)
         
         # Get long call premium (debit)
         cl_row = call_long.iloc[0]
         cl_bid = _get_num_from_row(cl_row, ["bid", "Bid", "b"])
         cl_ask = _get_num_from_row(cl_row, ["ask", "Ask", "a"])
         cl_last = _get_num_from_row(cl_row, ["lastPrice", "last", "mark", "mid"])
-        cl_prem = effective_debit(cl_bid, cl_ask, cl_last)
         cl_oi = _safe_int(_get_num_from_row(cl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+        cl_vol = _safe_int(_get_num_from_row(cl_row, ["volume", "Volume", "vol"], 0), 0)
+        cl_prem = effective_debit(cl_bid, cl_ask, cl_last, oi=cl_oi, volume=cl_vol, dte=D)
         
         if pl_prem != pl_prem or pl_prem <= 0 or cl_prem != cl_prem or cl_prem <= 0:
             continue
@@ -1172,7 +1200,8 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
         # - Low probability of touching (20%): min(put_cushion, call_cushion)
         # - Liquidity (10%): avg spread across 4 legs
         
-        avg_spread = (ps_row["spread%"] or 20.0 + cs_row["spread%"] or 20.0) / 2.0
+        # Average liquidity across short legs; default to 20% if unknown
+        avg_spread = ((ps_row.get("spread%") or 20.0) + (cs_row.get("spread%") or 20.0)) / 2.0
         liq_score = max(0.0, 1.0 - avg_spread / 20.0)
         
         min_cushion_val = min(put_cushion, call_cushion) if (put_cushion == put_cushion and call_cushion == call_cushion) else 0.0
@@ -1394,7 +1423,12 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             
             if prem != prem or prem <= 0:
                 continue
@@ -1436,8 +1470,9 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
             pl_bid = _get_num_from_row(pl_row, ["bid", "Bid", "b"])
             pl_ask = _get_num_from_row(pl_row, ["ask", "Ask", "a"])
             pl_last = _get_num_from_row(pl_row, ["lastPrice", "last", "mark", "mid"])
-            pl_prem = effective_debit(pl_bid, pl_ask, pl_last)
             pl_oi = _safe_int(_get_num_from_row(pl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+            pl_vol = _safe_int(_get_num_from_row(pl_row, ["volume", "Volume", "vol"], 0), 0)
+            pl_prem = effective_debit(pl_bid, pl_ask, pl_last, oi=pl_oi, volume=pl_vol, dte=D)
             
             if pl_prem != pl_prem or pl_prem <= 0:
                 continue
@@ -1767,7 +1802,12 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             bid = _get_num_from_row(r, ["bid", "Bid", "b"])
             ask = _get_num_from_row(r, ["ask", "Ask", "a"])
             last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"])
-            prem = effective_credit(bid, ask, last)
+            prem = effective_credit(
+                bid, ask, last,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "oi", "open_interest"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume", "vol"], 0), 0),
+                dte=D
+            )
             
             if prem != prem or prem <= 0:
                 continue
@@ -1809,8 +1849,9 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
             cl_bid = _get_num_from_row(cl_row, ["bid", "Bid", "b"])
             cl_ask = _get_num_from_row(cl_row, ["ask", "Ask", "a"])
             cl_last = _get_num_from_row(cl_row, ["lastPrice", "last", "mark", "mid"])
-            cl_prem = effective_debit(cl_bid, cl_ask, cl_last)
             cl_oi = _safe_int(_get_num_from_row(cl_row, ["openInterest", "oi", "open_interest"], 0), 0)
+            cl_vol = _safe_int(_get_num_from_row(cl_row, ["volume", "Volume", "vol"], 0), 0)
+            cl_prem = effective_debit(cl_bid, cl_ask, cl_last, oi=cl_oi, volume=cl_vol, dte=D)
             
             if cl_prem != cl_prem or cl_prem <= 0:
                 continue

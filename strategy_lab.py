@@ -3405,6 +3405,15 @@ with tabs[6]:
                 
                 with col2:
                     st.write("**Order Settings:**")
+                    # Pricing aggressiveness selector (global)
+                    pricing_aggr = st.selectbox(
+                        "Pricing aggressiveness",
+                        options=["Conservative", "Balanced", "Assertive"],
+                        index=1,
+                        help="Bias limit prices toward higher fill probability (Conservative) or faster fill at better prices (Assertive)."
+                    )
+                    st.session_state['pricing_aggressiveness'] = pricing_aggr
+
                     num_contracts = st.number_input(
                         "Contracts",
                         min_value=1,
@@ -5413,28 +5422,33 @@ with tabs[7]:
             st.altair_chart(base_chart, use_container_width=True)
 
             def pct(x): return f"{x*100:.2f}%"
+            # Compute ROI from displayed P&L values to ensure alignment with scenarios
+            _days_for_mc = int(mc.get("days", int(days_for_mc))) if isinstance(mc, dict) else int(days_for_mc)
+            _collateral = float(mc.get("collateral", 0.0)) if isinstance(mc, dict) else 0.0
+            def _ann_from_pnl(pnl_contract: float) -> float:
+                try:
+                    if _collateral <= 0.0:
+                        return float("nan")
+                    cycle_roi = float(pnl_contract) / float(_collateral)
+                    return float(_safe_annualize_roi(cycle_roi, _days_for_mc))
+                except Exception:
+                    return float("nan")
+
             roi_rows = [
-                {"Scenario": "Expected", "Annualized ROI": pct(
-                    mc["roi_ann_expected"])},
-                {"Scenario": "P5 (bear)", "Annualized ROI": pct(mc["roi_ann_p5"])},
-                {"Scenario": "P50 (median)", "Annualized ROI": pct(
-                    mc["roi_ann_p50"])},
-                {"Scenario": "P95 (bull)", "Annualized ROI": pct(
-                    mc["roi_ann_p95"])},
+                {"Scenario": "Expected", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_expected", float("nan"))))},
+                {"Scenario": "P5 (bear)", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p5", float("nan"))))},
+                {"Scenario": "P50 (median)", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p50", float("nan"))))},
+                {"Scenario": "P95 (bull)", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p95", float("nan"))))},
             ]
-            st.subheader("Annualized ROI (from MC)")
+            st.subheader("Annualized ROI (from scenario P&L)")
             st.dataframe(pd.DataFrame(roi_rows), width='stretch')
 
             st.subheader("At‑a‑Glance: Trade Summary & Risk")
             summary_rows = [
-                {"Scenario": "P5 (bear)", "P&L ($/contract)":
-                 f"{mc['pnl_p5']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p5"])},
-                {"Scenario": "P50 (median)", "P&L ($/contract)":
-                 f"{mc['pnl_p50']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p50"])},
-                {"Scenario": "P95 (bull)", "P&L ($/contract)":
-                 f"{mc['pnl_p95']:,.0f}", "Annualized ROI": pct(mc["roi_ann_p95"])},
-                {"Scenario": "Expected",
-                    "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(mc["roi_ann_expected"])},
+                {"Scenario": "P5 (bear)", "P&L ($/contract)": f"{mc['pnl_p5']:,.0f}", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p5", float("nan"))))},
+                {"Scenario": "P50 (median)", "P&L ($/contract)": f"{mc['pnl_p50']:,.0f}", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p50", float("nan"))))},
+                {"Scenario": "P95 (bull)", "P&L ($/contract)": f"{mc['pnl_p95']:,.0f}", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_p95", float("nan"))))},
+                {"Scenario": "Expected", "P&L ($/contract)": f"{mc['pnl_expected']:,.0f}", "Annualized ROI": pct(_ann_from_pnl(mc.get("pnl_expected", float("nan"))))},
             ]
             st.dataframe(pd.DataFrame(summary_rows), width='stretch')
 
