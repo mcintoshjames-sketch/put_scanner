@@ -2468,6 +2468,7 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
 
                 # Find ATM IV: prefer yfinance schema, then provider frames; coerce to float
                 iv_num = float('nan')
+                yf_chain = None
                 try:
                     yf_chain = stock.option_chain(suitable_exp)
                     if not yf_chain.calls.empty:
@@ -2560,14 +2561,34 @@ def prescreen_tickers(tickers, min_price=5.0, max_price=1000.0, min_avg_volume=1
                 # Use BEST liquidity from OTM range (where actual trades happen)
                 opt_volume, opt_oi = _best_metrics(otm_puts, otm_calls)
 
-                # Fallback: if OTM windows are empty/zero, use ATM vicinity from full frames
+                # Fallback A: if OTM windows are empty/zero, use ATM vicinity from provider frames
                 if (opt_volume == 0 or opt_oi == 0) and (not puts_df.empty or not calls_df.empty):
-                    # Define a tighter band around ATM if OTM ranges yielded nothing
                     near_puts = puts_df[(puts_df['strike'] >= current_price * 0.90) & (puts_df['strike'] <= current_price * 1.00)] if not puts_df.empty else puts_df
                     near_calls = calls_df[(calls_df['strike'] >= current_price * 1.00) & (calls_df['strike'] <= current_price * 1.10)] if not calls_df.empty else calls_df
                     vol_fb, oi_fb = _best_metrics(near_puts, near_calls)
                     opt_volume = max(opt_volume, vol_fb)
                     opt_oi = max(opt_oi, oi_fb)
+
+                # Fallback B: if still zero and we have a yfinance chain, compute from YF calls/puts
+                try:
+                    if (opt_volume == 0 or opt_oi == 0) and 'yf_chain' in locals() and yf_chain is not None:
+                        yf_puts = yf_chain.puts.copy() if hasattr(yf_chain, 'puts') else pd.DataFrame()
+                        yf_calls = yf_chain.calls.copy() if hasattr(yf_chain, 'calls') else pd.DataFrame()
+                        if not yf_puts.empty or not yf_calls.empty:
+                            otm_puts_yf = yf_puts[(yf_puts['strike'] >= current_price * 0.85) & (yf_puts['strike'] <= current_price * 0.95)] if not yf_puts.empty else yf_puts
+                            otm_calls_yf = yf_calls[(yf_calls['strike'] >= current_price * 1.05) & (yf_calls['strike'] <= current_price * 1.15)] if not yf_calls.empty else yf_calls
+                            vol_yf, oi_yf = _best_metrics(otm_puts_yf, otm_calls_yf)
+                            if vol_yf == 0 or oi_yf == 0:
+                                # Try near-ATM for YF
+                                near_puts_yf = yf_puts[(yf_puts['strike'] >= current_price * 0.90) & (yf_puts['strike'] <= current_price * 1.00)] if not yf_puts.empty else yf_puts
+                                near_calls_yf = yf_calls[(yf_calls['strike'] >= current_price * 1.00) & (yf_calls['strike'] <= current_price * 1.10)] if not yf_calls.empty else yf_calls
+                                vol2_yf, oi2_yf = _best_metrics(near_puts_yf, near_calls_yf)
+                                vol_yf = max(vol_yf, vol2_yf)
+                                oi_yf = max(oi_yf, oi2_yf)
+                            opt_volume = max(opt_volume, vol_yf)
+                            opt_oi = max(opt_oi, oi_yf)
+                except Exception:
+                    pass
 
                 if check_liquidity and (opt_volume < min_option_volume and opt_oi < min_option_volume * 10):
                     return None
