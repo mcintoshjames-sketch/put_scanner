@@ -179,6 +179,7 @@ class SchwabClient:
         - volume: daily volume
         """
         try:
+            # Request option chain for the specified expiration
             response = self.client.get_option_chain(
                 symbol.upper(),
                 contract_type=client.Client.Options.ContractType.ALL,
@@ -229,9 +230,30 @@ class SchwabClient:
 
     def _parse_contract(self, contract: dict, contract_type: str, symbol: str) -> dict:
         """Parse a single contract from Schwab API response."""
-        bid = contract.get("bid", 0.0)
-        ask = contract.get("ask", 0.0)
-        last = contract.get("last", 0.0)
+        # Prefer top-level fields; if missing/zero, fall back to nested quote object
+        quote = contract.get("quote", {}) or {}
+
+        def _num(x, default=0.0):
+            try:
+                return float(x) if x is not None else float(default)
+            except Exception:
+                return float(default)
+
+        bid = contract.get("bid", None)
+        ask = contract.get("ask", None)
+        last = contract.get("last", None)
+
+        # Fallback to quote fields when top-level missing/zero
+        if not bid or bid <= 0:
+            bid = quote.get("bidPrice", quote.get("bid", 0.0))
+        if not ask or ask <= 0:
+            ask = quote.get("askPrice", quote.get("ask", 0.0))
+        if not last or last <= 0:
+            last = quote.get("lastPrice", quote.get("mark", 0.0))
+
+        bid = _num(bid, 0.0)
+        ask = _num(ask, 0.0)
+        last = _num(last, 0.0)
         
         # Calculate mark
         mark = None
@@ -249,12 +271,16 @@ class SchwabClient:
             "ask": float(ask) if ask else 0.0,
             "last": float(last) if last else 0.0,
             "lastPrice": float(last) if last else 0.0,
-            "openInterest": int(contract.get("openInterest", 0)),
-            "impliedVolatility": float(contract.get("volatility", 0.0)) / 100.0,  # Convert from % to decimal
+            "openInterest": int(contract.get("openInterest", quote.get("openInterest", 0)) or 0),
+            # Schwab returns volatility in percent points; normalize to decimal
+            "impliedVolatility": float(
+                (contract.get("volatility", None) if contract.get("volatility", None) is not None else quote.get("volatility", 0.0))
+            ) / 100.0,
             "delta": float(contract.get("delta", 0.0)),
             "gamma": float(contract.get("gamma", 0.0)),
             "theta": float(contract.get("theta", 0.0)),
             "vega": float(contract.get("vega", 0.0)),
-            "volume": int(contract.get("totalVolume", 0)),
+            # Total option volume can be under top-level totalVolume or nested quote.totalVolume
+            "volume": int((contract.get("totalVolume") if contract.get("totalVolume") is not None else quote.get("totalVolume", 0)) or 0),
             "mark": mark,
         }

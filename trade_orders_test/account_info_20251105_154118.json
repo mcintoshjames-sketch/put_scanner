@@ -1,0 +1,26 @@
+{
+  "timestamp": "2025-11-05T15:41:18.158374",
+  "account_id": "HASH_TEST",
+  "account_data": {
+    "securitiesAccount": {
+      "type": "MARGIN",
+      "accountNumber": "HASH_TEST",
+      "currentBalances": {
+        "cashBalance": 50000.0,
+        "buyingPower": 200000.0,
+        "optionBuyingPower": 50000.0
+      },
+      "positions": [
+        {
+          "instrument": {
+            "assetType": "EQUITY",
+            "symbol": "AAPL"
+          },
+          "longQuantity": 200,
+          "averagePrice": 150.0,
+          "marketValue": 30000.0
+        }
+      ]
+    }
+  }
+}

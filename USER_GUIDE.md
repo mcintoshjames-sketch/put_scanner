@@ -11,25 +11,15 @@
 1. [Overview](#overview)
 2. [Getting Started](#getting-started)
 3. [Financial Strategy Explained](#financial-strategy-explained)
-4. [Tab-by-Tab Guide](#tab-by-tab-guide)
-5. [Understanding the Metrics](#understanding-the-metrics)
-6. [Best Practices](#best-practices)
 7. [Troubleshooting](#troubleshooting)
-8. [Advanced Topics](#advanced-topics)
 
 ---
 
 ## Overview
 
 ### What is Strategy Lab?
-
-Strategy Lab is a comprehensive options analysis tool designed for **risk-managed, short-term income generation** using three core strategies:
-
 1. **Cash-Secured Puts (CSP)** - Generate income while waiting to buy stocks at a discount
 2. **Covered Calls (CC)** - Generate income on stocks you already own
-3. **Collars** - Protect downside while capping upside
-
-### Who Is This For?
 
 - **Conservative income traders** seeking 10-45 day positions
 - **Theta harvesting enthusiasts** looking for the time-decay sweet spot (21-35 DTE)
@@ -38,19 +28,11 @@ Strategy Lab is a comprehensive options analysis tool designed for **risk-manage
 
 ### Core Philosophy
 
-This tool is built around **three pillars**:
 
 1. **Risk Management First** - Never sacrifice safety for yield
 2. **Time Decay Optimization** - Target the 21-35 DTE "sweet spot" where theta is highest relative to gamma
 3. **Liquidity Matters** - Only trade options with sufficient open interest and tight bid-ask spreads
 
----
-
-## Getting Started
-
-### Installation
-
-```bash
 # Clone or download the repository
 cd put_scanner
 

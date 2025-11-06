@@ -217,11 +217,19 @@ class SchwabTrader:
         
         try:
             # Call Schwab API to get account details
-            # fields parameter controls what data is returned
-            response = self.client.client.get_account(
-                acct_id, 
-                fields=self.client.client.Account.Fields.POSITIONS
-            )
+            # Support both wrapped SchwabClient (with .client) and direct client/mocks
+            schwab_client = self.client.client if hasattr(self.client, 'client') else self.client
+            # fields parameter controls what data is returned (if available on client)
+            fields = None
+            try:
+                fields = schwab_client.Account.Fields.POSITIONS  # type: ignore[attr-defined]
+            except Exception:
+                fields = None
+
+            if fields is not None:
+                response = schwab_client.get_account(acct_id, fields=fields)
+            else:
+                response = schwab_client.get_account(acct_id)
             
             account_data = response.json() if hasattr(response, 'json') else response
             
@@ -241,38 +249,7 @@ class SchwabTrader:
         except Exception as e:
             raise RuntimeError(f"Failed to retrieve account info: {e}")
     
-    def check_buying_power(
-        self,
-        required_amount: float,
-        account_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Check if account has sufficient buying power for a trade.
-        
-        Args:
-            required_amount: Amount of buying power required
-            account_id: Account hash value (uses self.account_id if not provided)
-        
-        Returns:
-            Dictionary with buying power details and sufficiency check
-        """
-        account_data = self.get_account_info(account_id)
-        
-        # Extract buying power from response
-        securities_account = account_data.get("securitiesAccount", {})
-        current_balances = securities_account.get("currentBalances", {})
-        
-        cash_balance = current_balances.get("cashBalance", 0.0)
-        buying_power = current_balances.get("buyingPower", 0.0)
-        option_bp = current_balances.get("optionBuyingPower", 0.0)
-        
-        return {
-            "cashBalance": cash_balance,
-            "buyingPower": buying_power,
-            "optionBuyingPower": option_bp,
-            "requiredAmount": required_amount,
-            "hasSufficientFunds": buying_power >= required_amount
-        }
+    
     
     def check_stock_position(
         self,
@@ -402,7 +379,13 @@ class SchwabTrader:
             "option_buying_power": option_buying_power,
             "total_buying_power": buying_power,
             "cash_balance": cash_balance,
-            "account_type": securities_account.get('type', 'UNKNOWN')
+            "account_type": securities_account.get('type', 'UNKNOWN'),
+            # Back-compat aliases used in some UI paths
+            "hasSufficientFunds": available >= required_amount,
+            "requiredAmount": required_amount,
+            "buyingPower": buying_power,
+            "optionBuyingPower": option_buying_power,
+            "cashBalance": cash_balance,
         }
         
         return result
@@ -457,6 +440,14 @@ class SchwabTrader:
             # Register this order as previewed (for safety mechanism)
             order_hash = self._register_preview(order)
             
+            # Derive incremental buying power/margin requirement from preview + balances
+            margin_check = None
+            try:
+                margin_check = self._assess_incremental_margin(order, preview_data, acct_id)
+            except Exception:
+                # Best-effort; do not fail preview on margin check issues
+                margin_check = None
+            
             # Save preview to file for reference
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filepath = self.export_dir / f"order_preview_{timestamp}.json"
@@ -467,12 +458,14 @@ class SchwabTrader:
                     "account_id": acct_id,
                     "order": order,
                     "preview": preview_data,
+                    "margin_check": margin_check,
                     "order_hash": order_hash  # Include hash for tracking
                 }, f, indent=2)
             
             return {
                 "status": "preview_success",
                 "preview": preview_data,
+                "margin_check": margin_check,
                 "filepath": str(filepath),
                 "order_hash": order_hash,
                 "message": f"Order preview saved to {filepath}"
@@ -1596,6 +1589,86 @@ class SchwabTrader:
             "valid": len(errors) == 0,
             "errors": errors,
             "warnings": warnings
+        }
+
+    # ---------------- Internal helpers: Margin/Buying Power assessment ----------------
+    def _extract_required_buying_power(self, preview: Dict[str, Any]) -> Optional[float]:
+        """
+        Best-effort extraction of required buying power (absolute consumption) from preview payload.
+        Returns a non-negative float if determinable, else None.
+        """
+        try:
+            if not isinstance(preview, dict):
+                return None
+            # Common Schwab preview nesting used by mock and often by API
+            op = preview.get("orderPreview") or {}
+            bpe = op.get("buyingPowerEffect") or {}
+            change = bpe.get("changeInBuyingPower")
+            if isinstance(change, (int, float)):
+                return abs(float(change))
+
+            # Alternate flattened keys our UI sometimes expects
+            val_bpe = preview.get("buyingPowerEffect")
+            if isinstance(val_bpe, (int, float)):
+                return abs(float(val_bpe))
+            val_mr = preview.get("marginRequirement")
+            if isinstance(val_mr, (int, float)):
+                return max(0.0, float(val_mr))
+
+            # Some responses may include projected balances deltas
+            proj = preview.get("projectedBalances") or {}
+            proj_change = proj.get("buyingPowerChange")
+            if isinstance(proj_change, (int, float)):
+                return abs(float(proj_change))
+        except Exception:
+            return None
+        return None
+
+    def _assess_incremental_margin(
+        self,
+        order: Dict[str, Any],
+        preview_data: Dict[str, Any],
+        account_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Compare preview's buying power/margin consumption with current account balances.
+        Returns a dict describing whether additional margin is required and by how much.
+        """
+        # Determine legs composition to choose which BP metric to use
+        legs = order.get("orderLegCollection", []) or []
+        has_option_leg = any((leg.get("instrument", {}).get("assetType") == "OPTION") for leg in legs)
+        has_equity_leg = any((leg.get("instrument", {}).get("assetType") == "EQUITY") for leg in legs)
+
+        # Extract required amount from preview
+        required = self._extract_required_buying_power(preview_data)
+        if required is None:
+            return None  # Cannot assess
+
+        # Fetch balances
+        acct_info = self.get_account_info(account_id)
+        sa = (acct_info or {}).get("securitiesAccount", {})
+        cb = sa.get("currentBalances", {})
+        total_bp = float(cb.get("buyingPower", 0.0) or 0.0)
+        option_bp = float(cb.get("optionBuyingPower", 0.0) or 0.0)
+        cash_balance = float(cb.get("cashBalance", 0.0) or 0.0)
+
+        # Heuristic for metric selection:
+        # - Pure options strategies: use optionBuyingPower
+        # - Mixed equity+options or equity-only: use total buyingPower
+        metric_used = "optionBuyingPower" if (has_option_leg and not has_equity_leg) else "buyingPower"
+        available = option_bp if metric_used == "optionBuyingPower" else total_bp
+
+        incremental_needed = max(0.0, required - max(0.0, available))
+        requires = incremental_needed > 1e-6
+
+        return {
+            "metricUsed": metric_used,
+            "available": round(available, 2),
+            "required": round(required, 2),
+            "incrementalRequired": round(incremental_needed, 2),
+            "requiresAdditionalMargin": bool(requires),
+            "accountType": sa.get("type", "UNKNOWN"),
+            "cashBalance": round(cash_balance, 2),
         }
 
 

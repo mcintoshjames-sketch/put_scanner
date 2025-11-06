@@ -4,6 +4,7 @@ Test that CC hard filter rejects negative MC expected P&L.
 """
 
 import sys
+import pandas as pd
 sys.path.insert(0, "/workspaces/put_scanner")
 
 from strategy_lab import analyze_cc

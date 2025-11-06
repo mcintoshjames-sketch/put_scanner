@@ -1,0 +1,39 @@
+{
+  "timestamp": "2025-11-05T15:35:44.764311",
+  "account_id": "HASH_TEST",
+  "order": {
+    "orderType": "LIMIT",
+    "session": "NORMAL",
+    "duration": "GTC",
+    "orderStrategyType": "SINGLE",
+    "orderLegCollection": [
+      {
+        "instruction": "SELL_TO_OPEN",
+        "quantity": 1,
+        "instrument": {
+          "symbol": "AAPL  251219P00100000",
+          "assetType": "OPTION"
+        }
+      }
+    ],
+    "price": 1.5
+  },
+  "preview": {
+    "orderPreview": {
+      "accountId": "HASH_TEST",
+      "estimatedValue": -150.0,
+      "estimatedCommission": 0.65,
+      "buyingPowerEffect": {
+        "changeInBuyingPower": -150.0
+      },
+      "messages": [
+        {
+          "type": "INFO",
+          "text": "Mock preview OK"
+        }
+      ]
+    }
+  },
+  "margin_check": null,
+  "order_hash": "5405b23672e10b3f"
+}

@@ -488,6 +488,22 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
                          + div_ps_period)
         capital_per_share = S0
     
+    elif strategy == "FENCE":
+        # Two-leg structure: short call + long put, no stock position
+        # P&L per share at expiration (ignoring borrow/dividends):
+        #   = -max(0, S_T - Kc) + max(0, Kp - S_T) + (call_premium - put_premium)
+        Kc = float(params["Kc"])
+        Pc = float(params["call_premium"])  # credit from short call
+        Kp = float(params["Kp"])
+        Pp = float(params["put_premium"])   # debit for long put
+        net_credit = float(Pc) - float(Pp)
+        pnl_per_share = (-np.maximum(0.0, S_T - Kc)
+                         + np.maximum(0.0, Kp - S_T)
+                         + net_credit)
+        # There is no bounded max loss on the upside; capital is undefined here.
+        # Return NaN capital so ROI is suppressed while still providing P&L stats.
+        capital_per_share = float("nan")
+    
     elif strategy == "IRON_CONDOR":
         # Iron Condor: Sell OTM put spread + Sell OTM call spread
         # Profit if stock stays between short strikes
@@ -589,6 +605,7 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
             out[f"{label}_p50"] = float("nan")
             out[f"{label}_p95"] = float("nan")
             out[f"{label}_min"] = float("nan")
+            out[f"{label}_max"] = float("nan")
         else:
             out[f"{label}_expected"] = float(np.mean(arr_clean))
             out[f"{label}_std"] = float(np.std(arr_clean))
@@ -596,14 +613,22 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
             out[f"{label}_p50"] = float(np.percentile(arr_clean, 50))
             out[f"{label}_p95"] = float(np.percentile(arr_clean, 95))
             out[f"{label}_min"] = float(np.min(arr_clean))
+            out[f"{label}_max"] = float(np.max(arr_clean))
     
     # Calculate Sharpe ratio
     pnl_clean = pnl_contract[np.isfinite(pnl_contract)]
-    if pnl_clean.size > 0 and np.std(pnl_clean) > 0:
+    if days > 0 and pnl_clean.size > 0 and np.std(pnl_clean) > 0:
         # Assuming risk-free rate ~= 0 for simplicity (or use mu)
         sharpe = np.mean(pnl_clean) / np.std(pnl_clean) * np.sqrt(365.0 / days)
         out["sharpe"] = float(sharpe)
     else:
         out["sharpe"] = float("nan")
+
+    # Provide a compact summary expected by some tests
+    roi_clean = roi_ann[np.isfinite(roi_ann)] if isinstance(roi_ann, np.ndarray) else np.array([])
+    out["summary"] = {
+        "mean_pnl_per_share": float(np.mean(pnl_per_share)) if np.isfinite(np.mean(pnl_per_share)) else float("nan"),
+        "mean_roi_ann": float(np.mean(roi_clean)) if roi_clean.size > 0 else float("nan"),
+    }
     
     return out
