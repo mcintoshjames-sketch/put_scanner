@@ -4219,53 +4219,102 @@ with tabs[7]:
 
 # --- Tab 9: Compare ---
 with tabs[8]:
-    st.header("Compare Projected Annualized ROIs (mid-price based)")
-    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty and df_bull_put_spread.empty and df_bear_call_spread.empty:
+    st.header("Compare Strategies — Unified Risk-Adjusted Scores")
+    if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty and df_bull_put_spread.empty and df_bear_call_spread.empty and st.session_state.get("df_pmcc", pd.DataFrame()).empty and st.session_state.get("df_synthetic_collar", pd.DataFrame()).empty:
         st.info("No results yet. Run a scan.")
     else:
+        # Compute unified score across all strategies for comparability
+        try:
+            from scoring_utils import apply_unified_score
+        except Exception:
+            apply_unified_score = None
+
         pieces = []
         if not df_csp.empty:
-            tmp = df_csp[["Strategy", "Ticker", "Exp", "Days",
-                          "Strike", "Premium", "ROI%_ann", "Score"]].copy()
+            tmp = df_csp.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Collateral","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | K=" + tmp["Strike"].astype(str)
             pieces.append(tmp)
         if not df_cc.empty:
-            tmp = df_cc[["Strategy", "Ticker", "Exp", "Days",
-                         "Strike", "Premium", "ROI%_ann", "Score"]].copy()
+            tmp = df_cc.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | K=" + tmp["Strike"].astype(str)
             pieces.append(tmp)
+        # PMCC
+        df_pmcc = st.session_state.get("df_pmcc", pd.DataFrame())
+        if df_pmcc is not None and not df_pmcc.empty:
+            tmp = df_pmcc.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            # Map to common columns
+            tmp["Strike"] = tmp.get("ShortStrike", np.nan)
+            tmp["Premium"] = tmp.get("ShortPrem", np.nan)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","LongStrike","ShortStrike","NetDebit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp.get("Exp").astype(str) + " | Long=" + tmp.get("LongStrike").astype(str) + " | Short=" + tmp.get("ShortStrike").astype(str)
+            pieces.append(tmp)
+        # Synthetic Collar
+        df_synthetic_collar = st.session_state.get("df_synthetic_collar", pd.DataFrame())
+        if df_synthetic_collar is not None and not df_synthetic_collar.empty:
+            tmp = df_synthetic_collar.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp["Strike"] = tmp.get("ShortStrike", np.nan)
+            tmp["Premium"] = tmp.get("NetDebit", np.nan)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","LongStrike","PutStrike","ShortStrike","NetDebit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
+            tmp["Key"] = tmp["Ticker"] + " | " + tmp.get("Exp").astype(str) + " | Long=" + tmp.get("LongStrike").astype(str) + " | Put=" + tmp.get("PutStrike").astype(str) + " | Short=" + tmp.get("ShortStrike").astype(str)
+            pieces.append(tmp)
         if not df_collar.empty:
-            tmp = df_collar[["Strategy", "Ticker", "Exp", "Days", "CallStrike",
-                             "PutStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = df_collar.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","CallStrike","PutStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp = tmp.rename(columns={"CallStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Premium"] = tmp.get("NetCredit")
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | K=" + tmp["Strike"].astype(str)
             tmp["Strategy"] = "COLLAR"
             pieces.append(tmp)
         if not df_iron_condor.empty:
-            tmp = df_iron_condor[["Strategy", "Ticker", "Exp", "Days", "CallShortStrike",
-                                   "PutShortStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = df_iron_condor.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","CallShortStrike","PutShortStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Premium"] = tmp.get("NetCredit")
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
             pieces.append(tmp)
         if not df_bull_put_spread.empty:
-            tmp = df_bull_put_spread[["Strategy", "Ticker", "Exp", "Days",
-                                       "SellStrike", "BuyStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = df_bull_put_spread.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp = tmp.rename(columns={"SellStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Premium"] = tmp.get("NetCredit")
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
             pieces.append(tmp)
         if not df_bear_call_spread.empty:
-            tmp = df_bear_call_spread[["Strategy", "Ticker", "Exp", "Days",
-                                        "SellStrike", "BuyStrike", "NetCredit", "ROI%_ann", "Score"]].copy()
+            tmp = df_bear_call_spread.copy()
+            if apply_unified_score is not None:
+                tmp = apply_unified_score(tmp)
+            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
+            tmp = tmp[tmp_cols]
             tmp = tmp.rename(columns={"SellStrike": "Strike"})
-            tmp["Premium"] = tmp["NetCredit"]
+            tmp["Premium"] = tmp.get("NetCredit")
             tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
                 " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
             pieces.append(tmp)
@@ -4276,8 +4325,12 @@ with tabs[8]:
         if cmp_df.empty:
             st.info("No comparable rows.")
         else:
-            st.dataframe(cmp_df.sort_values(["Score", "ROI%_ann"], ascending=[False, False]),
-                         width='stretch', height=520)
+            sort_cols = [c for c in ["UnifiedScore", "MC_ROI_ann%", "ROI%_ann", "Score"] if c in cmp_df.columns]
+            if "UnifiedScore" in sort_cols:
+                cmp_df = cmp_df.sort_values(["UnifiedScore"] + sort_cols[1:], ascending=[False] + [False]*(len(sort_cols)-1))
+            else:
+                cmp_df = cmp_df.sort_values(sort_cols, ascending=[False]*len(sort_cols))
+            st.dataframe(cmp_df, width='stretch', height=520)
         
         # Trade Execution Module
         st.divider()
