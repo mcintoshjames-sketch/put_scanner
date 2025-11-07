@@ -9,6 +9,8 @@ for opportunities across 6 different strategies:
 - IRON_CONDOR (Iron Condors)
 - BULL_PUT_SPREAD (Bull Put Spreads)
 - BEAR_CALL_SPREAD (Bear Call Spreads)
+ - PMCC (Poor Man's Covered Call – diagonal: long deep ITM LEAPS call + short near-term call)
+ - SYNTHETIC_COLLAR (Deep ITM call + long protective put + short OTM call – options-only collar)
 
 Plus the prescreen_tickers function for ticker filtering.
 
@@ -799,6 +801,428 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
         df = df.sort_values(["Score", "ROI%_ann"], ascending=[
                             False, False]).reset_index(drop=True)
     return df
+
+# ----------------------------- PMCC (Poor Man's Covered Call) -----------------------------
+def analyze_pmcc(ticker, *, target_long_delta=0.80, long_min_days=180, long_max_days=400,
+                 short_min_days=21, short_max_days=60, short_delta_lo=0.20, short_delta_hi=0.35,
+                 min_oi=50, max_spread=15.0, earn_window=7, risk_free=0.00, bill_yield=0.0,
+                 pmcc_min_buffer_days: int = 120,
+                 pmcc_avoid_exdiv: bool = True,
+                 pmcc_long_leg_min_oi: int | None = None,
+                 pmcc_long_leg_max_spread: float | None = None):
+    """Scan for PMCC setups.
+    Simplified approach:
+      1. Pick a deep ITM LEAPS call (delta ~ target_long_delta, long_min_days..long_max_days)
+      2. Pick a short-term call (short_min_days..short_max_days) with delta in [short_delta_lo, short_delta_hi]
+    Returns DataFrame of candidates with estimated annualized ROI based on short call credit vs net debit.
+    """
+    from data_fetching import fetch_price, fetch_expirations, fetch_chain, effective_credit, effective_debit, _get_num_from_row, _safe_int, check_expiration_risk, estimate_next_ex_div
+    stock = yf.Ticker(ticker)
+    try:
+        S = fetch_price(ticker)
+    except Exception:
+        return pd.DataFrame()
+    expirations = fetch_expirations(ticker)
+    earn_date = get_earnings_date(stock)
+    div_ps_annual, div_y = trailing_dividend_info(stock, S)
+
+    # Select LEAPS expiration
+    leaps_exps = []
+    short_exps = []
+    today = datetime.now(timezone.utc).date()
+    for exp in expirations:
+        try:
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        D = (ed - today).days
+        if long_min_days <= D <= long_max_days:
+            leaps_exps.append((exp, D))
+        if short_min_days <= D <= short_max_days:
+            short_exps.append((exp, D))
+    if not leaps_exps or not short_exps:
+        return pd.DataFrame()
+
+    # For simplicity choose best single long call candidate (highest delta near target)
+    long_candidates = []
+    for exp, D in leaps_exps:
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        calls = chain_all[chain_all["type"].str.lower() == "call"].copy() if "type" in chain_all.columns else chain_all.copy()
+        if calls.empty:
+            continue
+        T = D / 365.0
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "K"]) or float("nan")
+            if not (K == K and K > 0):
+                continue
+            # Deep ITM: strike well below spot
+            if K >= S * 0.95:
+                continue
+            bid = _get_num_from_row(r, ["bid", "Bid"]) or float("nan")
+            ask = _get_num_from_row(r, ["ask", "Ask"]) or float("nan")
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]) or float("nan")
+            oi_long = _safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0)
+            prem = effective_debit(bid, ask, last, oi=oi_long)
+            if not (prem == prem and prem > 0):
+                continue
+            iv_raw = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], float("nan"))
+            iv_dec = iv_raw/100.0 if (iv_raw == iv_raw and iv_raw > 3.0) else iv_raw
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0) else 0.25
+            d1, d2 = _bs_d1_d2(S, K, risk_free, iv_for_calc, T, div_y)
+            delta = _norm_cdf(d1)
+            if abs(delta - target_long_delta) <= 0.10:  # within tolerance
+                spread_pct = compute_spread_pct(bid, ask, prem)
+                # Per-leg liquidity constraints (long LEAPS)
+                min_oi_long = pmcc_long_leg_min_oi if pmcc_long_leg_min_oi is not None else min_oi
+                max_spread_long = pmcc_long_leg_max_spread if pmcc_long_leg_max_spread is not None else max_spread
+                if (min_oi_long and oi_long > 0 and oi_long < int(min_oi_long)):
+                    continue
+                if (spread_pct is not None) and (float(spread_pct) > float(max_spread_long)):
+                    continue
+                long_candidates.append({"Exp": exp, "Days": D, "Strike": K, "Premium": prem, "Δ": delta, "IV": iv_for_calc*100.0, "Spread%": spread_pct, "OI": oi_long})
+    if not long_candidates:
+        return pd.DataFrame()
+    # Pick candidate whose delta closest to target
+    long_sel = sorted(long_candidates, key=lambda x: abs(x["Δ"] - target_long_delta))[0]
+
+    # Short leg candidates
+    rows = []
+    next_ex_date, next_div = estimate_next_ex_div(stock)
+    next_ex_date, next_div = estimate_next_ex_div(stock)
+    for exp, D in short_exps:
+        if earn_date and abs((earn_date - datetime.strptime(exp, "%Y-%m-%d").date()).days) <= earn_window:
+            continue
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        calls = chain_all[chain_all["type"].str.lower() == "call"].copy() if "type" in chain_all.columns else chain_all.copy()
+        if calls.empty:
+            continue
+        T = D / 365.0
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "K"]) or float("nan")
+            if not (K == K and K > 0):
+                continue
+            # Short leg must be OTM relative to spot & above long strike
+            if not (K > S and K > long_sel["Strike"]):
+                continue
+            bid = _get_num_from_row(r, ["bid", "Bid"]) or float("nan")
+            ask = _get_num_from_row(r, ["ask", "Ask"]) or float("nan")
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]) or float("nan")
+            oi_short = _safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0)
+            prem_short = effective_credit(bid, ask, last, oi=oi_short)
+            if not (prem_short == prem_short and prem_short > 0):
+                continue
+            iv_raw = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], float("nan"))
+            iv_dec = iv_raw/100.0 if (iv_raw == iv_raw and iv_raw > 3.0) else iv_raw
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0) else 0.25
+            d1, d2 = _bs_d1_d2(S, K, risk_free, iv_for_calc, T, div_y)
+            delta_short = _norm_cdf(d1)
+            if not (short_delta_lo <= delta_short <= short_delta_hi):
+                continue
+            spread_pct = compute_spread_pct(bid, ask, prem_short)
+            if spread_pct and spread_pct > max_spread:
+                continue
+            # LEAPS buffer after short expiry
+            try:
+                if (int(long_sel["Days"]) - int(D)) < int(pmcc_min_buffer_days):
+                    continue
+            except Exception:
+                pass
+            # Ex-dividend guard (assignment risk)
+            try:
+                if next_ex_date is not None:
+                    ed = datetime.strptime(exp, "%Y-%m-%d").date()
+                    if abs((next_ex_date - ed).days) <= 2:
+                        if pmcc_avoid_exdiv:
+                            continue
+                        intrinsic = max(0.0, S - float(K))
+                        extrinsic = max(0.0, float(prem_short) - intrinsic)
+                        if next_div and next_div > 0.0 and extrinsic < (next_div - 0.02):
+                            continue
+            except Exception:
+                pass
+            net_debit = long_sel["Premium"] - prem_short
+            if net_debit <= 0:  # require net debit (long diagonal)
+                continue
+            roi_ann = (prem_short / net_debit) * (365.0 / D)
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="CC",
+                open_interest=_safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0),
+                bid_ask_spread_pct=spread_pct or 0.0
+            )
+
+            # Monte Carlo approximation
+            mc_params = dict(
+                S0=S, days=D, iv=iv_for_calc,
+                long_call_strike=float(long_sel["Strike"]), long_call_cost=float(long_sel["Premium"]), long_days_total=int(long_sel["Days"]), long_iv=float(long_sel["IV"])/100.0,
+                short_call_strike=float(K), short_call_premium=float(prem_short), short_iv=iv_for_calc
+            )
+            try:
+                mc = mc_pnl("PMCC", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+                mc_expected = mc.get("pnl_expected", float("nan"))
+                mc_roi_ann = mc.get("roi_ann_expected", float("nan"))
+                mc_p5 = mc.get("pnl_p5", float("nan"))
+            except Exception:
+                mc_expected = float("nan"); mc_roi_ann = float("nan"); mc_p5 = float("nan")
+
+            score = unified_risk_reward_score(
+                expected_roi_ann_dec=mc_roi_ann/100.0 if mc_roi_ann == mc_roi_ann else roi_ann/100.0,
+                p5_pnl=mc_p5,
+                capital=net_debit*100.0,
+                spread_pct=spread_pct,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume"], 0), 0),
+                cushion_sigma=float("nan")
+            )
+            rows.append({
+                "Strategy": "PMCC", "Ticker": ticker, "Price": S, "Exp": exp, "Days": D,
+                "LongExp": long_sel["Exp"], "LongDays": long_sel["Days"],
+                "LongStrike": long_sel["Strike"], "ShortStrike": K,
+                "LongCost": long_sel["Premium"], "ShortPrem": prem_short,
+                "NetDebit": net_debit, "ROI%_ann": roi_ann*100.0,
+                "LongΔ": long_sel["Δ"], "ShortΔ": delta_short,
+                "AssignProb": delta_short*100.0,
+                "IV": iv_for_calc*100.0, "Spread%": spread_pct,
+                "MC_ExpectedPnL": mc_expected, "MC_ROI_ann%": mc_roi_ann,
+                "MC_PnL_p5": mc_p5, "Score": score,
+                "RiskType": "Bounded",
+                "ExpType": exp_risk.get("expiration_type", "") if isinstance(exp_risk, dict) else "",
+                "ExpRisk": exp_risk.get("risk_level", "") if isinstance(exp_risk, dict) else "",
+                "ExpAction": exp_risk.get("action", "") if isinstance(exp_risk, dict) else "",
+                "ExpWarn": exp_risk.get("warning_message", "") if isinstance(exp_risk, dict) else "",
+            })
+    return pd.DataFrame(rows)
+
+# ----------------------------- Synthetic Collar -----------------------------
+def analyze_synthetic_collar(ticker, *, target_long_delta=0.80, put_delta_target=-0.15,
+                              long_min_days=180, long_max_days=400, short_min_days=21, short_max_days=60,
+                              short_delta_lo=0.20, short_delta_hi=0.35, min_oi=50, max_spread=15.0,
+                              earn_window=7, risk_free=0.0, bill_yield=0.0,
+                              syn_min_floor_sigma: float = 1.0,
+                              syn_min_buffer_days: int = 120,
+                              syn_avoid_exdiv: bool = True,
+                              syn_long_leg_min_oi: int | None = None,
+                              syn_long_leg_max_spread: float | None = None,
+                              syn_put_leg_min_oi: int | None = None,
+                              syn_put_leg_max_spread: float | None = None):
+    """Options-only collar: Long deep ITM call (synthetic stock) + Long put + Short OTM call.
+    Simplified scanning similar to PMCC with added put leg.
+    """
+    from data_fetching import fetch_price, fetch_expirations, fetch_chain, effective_credit, effective_debit, _get_num_from_row, _safe_int, check_expiration_risk, estimate_next_ex_div
+    stock = yf.Ticker(ticker)
+    try:
+        S = fetch_price(ticker)
+    except Exception:
+        return pd.DataFrame()
+    expirations = fetch_expirations(ticker)
+    earn_date = get_earnings_date(stock)
+    div_ps_annual, div_y = trailing_dividend_info(stock, S)
+    today = datetime.now(timezone.utc).date()
+    leaps_exps = []
+    short_exps = []
+    for exp in expirations:
+        try:
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        D = (ed - today).days
+        if long_min_days <= D <= long_max_days:
+            leaps_exps.append((exp, D))
+        if short_min_days <= D <= short_max_days:
+            short_exps.append((exp, D))
+    if not leaps_exps or not short_exps:
+        return pd.DataFrame()
+    # Long call selection (same as PMCC)
+    long_candidates = []
+    for exp, D in leaps_exps:
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        calls = chain_all[chain_all["type"].str.lower() == "call"].copy() if "type" in chain_all.columns else chain_all.copy()
+        if calls.empty:
+            continue
+        T = D / 365.0
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "K"]) or float("nan")
+            if not (K == K and K > 0):
+                continue
+            if K >= S * 0.95:
+                continue
+            bid = _get_num_from_row(r, ["bid", "Bid"]) or float("nan")
+            ask = _get_num_from_row(r, ["ask", "Ask"]) or float("nan")
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]) or float("nan")
+            oi_long = _safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0)
+            prem = effective_debit(bid, ask, last, oi=oi_long)
+            if not (prem == prem and prem > 0):
+                continue
+            iv_raw = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], float("nan"))
+            iv_dec = iv_raw/100.0 if (iv_raw == iv_raw and iv_raw > 3.0) else iv_raw
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0) else 0.25
+            d1, d2 = _bs_d1_d2(S, K, risk_free, iv_for_calc, T, div_y)
+            delta = _norm_cdf(d1)
+            if abs(delta - target_long_delta) <= 0.10:
+                spread_pct = compute_spread_pct(bid, ask, prem)
+                min_oi_long = syn_long_leg_min_oi if syn_long_leg_min_oi is not None else min_oi
+                max_spread_long = syn_long_leg_max_spread if syn_long_leg_max_spread is not None else max_spread
+                if (min_oi_long and oi_long > 0 and oi_long < int(min_oi_long)):
+                    continue
+                if (spread_pct is not None) and (float(spread_pct) > float(max_spread_long)):
+                    continue
+                long_candidates.append({"Exp": exp, "Days": D, "Strike": K, "Premium": prem, "Δ": delta, "IV": iv_for_calc*100.0, "Spread%": spread_pct, "OI": oi_long})
+    if not long_candidates:
+        return pd.DataFrame()
+    long_sel = sorted(long_candidates, key=lambda x: abs(x["Δ"] - target_long_delta))[0]
+
+    rows = []
+    for exp, D in short_exps:
+        if earn_date and abs((earn_date - datetime.strptime(exp, "%Y-%m-%d").date()).days) <= earn_window:
+            continue
+        chain_all = fetch_chain(ticker, exp)
+        if chain_all is None or chain_all.empty:
+            continue
+        calls = chain_all[chain_all["type"].str.lower() == "call"].copy() if "type" in chain_all.columns else chain_all.copy()
+        puts = chain_all[chain_all["type"].str.lower() == "put"].copy() if "type" in chain_all.columns else chain_all.copy()
+        if calls.empty or puts.empty:
+            continue
+        T = D / 365.0
+        # Select protective put near desired delta
+        put_choice = None
+        for _, r in puts.iterrows():
+            Kp = _get_num_from_row(r, ["strike", "Strike", "K"]) or float("nan")
+            if not (Kp == Kp and Kp > 0):
+                continue
+            if Kp >= S * 0.98:  # want OTM put
+                continue
+            bid = _get_num_from_row(r, ["bid", "Bid"]) or float("nan")
+            ask = _get_num_from_row(r, ["ask", "Ask"]) or float("nan")
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]) or float("nan")
+            oi_put = _safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0)
+            prem_put = effective_debit(bid, ask, last, oi=oi_put)
+            if not (prem_put == prem_put and prem_put > 0):
+                continue
+            iv_raw = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], float("nan"))
+            iv_dec = iv_raw/100.0 if (iv_raw == iv_raw and iv_raw > 3.0) else iv_raw
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0) else 0.25
+            d1, d2 = _bs_d1_d2(S, Kp, risk_free, iv_for_calc, T, div_y)
+            delta_put = _norm_cdf(d1) - 1.0  # convert to put delta approximation
+            spread_put = compute_spread_pct(bid, ask, prem_put)
+            min_oi_put = syn_put_leg_min_oi if syn_put_leg_min_oi is not None else min_oi
+            max_spread_put = syn_put_leg_max_spread if syn_put_leg_max_spread is not None else max_spread
+            if (min_oi_put and oi_put > 0 and oi_put < int(min_oi_put)):
+                continue
+            if (spread_put is not None) and (float(spread_put) > float(max_spread_put)):
+                continue
+            if abs(delta_put - put_delta_target) <= 0.05:
+                put_choice = {"Strike": Kp, "Premium": prem_put, "Δ": delta_put, "IV": iv_for_calc*100.0, "Spread%": spread_put, "OI": oi_put}
+                break
+        if not put_choice:
+            continue
+        # Short call candidates
+        for _, r in calls.iterrows():
+            K = _get_num_from_row(r, ["strike", "Strike", "K"]) or float("nan")
+            if not (K == K and K > 0):
+                continue
+            if not (K > S and K > long_sel["Strike"]):
+                continue
+            bid = _get_num_from_row(r, ["bid", "Bid"]) or float("nan")
+            ask = _get_num_from_row(r, ["ask", "Ask"]) or float("nan")
+            last = _get_num_from_row(r, ["lastPrice", "last", "mark", "mid"]) or float("nan")
+            oi_short = _safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0)
+            prem_short = effective_credit(bid, ask, last, oi=oi_short)
+            if not (prem_short == prem_short and prem_short > 0):
+                continue
+            iv_raw = _get_num_from_row(r, ["impliedVolatility", "iv", "IV"], float("nan"))
+            iv_dec = iv_raw/100.0 if (iv_raw == iv_raw and iv_raw > 3.0) else iv_raw
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0) else 0.25
+            d1, d2 = _bs_d1_d2(S, K, risk_free, iv_for_calc, T, div_y)
+            delta_short = _norm_cdf(d1)
+            if not (short_delta_lo <= delta_short <= short_delta_hi):
+                continue
+            spread_pct = compute_spread_pct(bid, ask, prem_short)
+            if spread_pct and spread_pct > max_spread:
+                continue
+            # LEAPS time buffer
+            try:
+                if (int(long_sel["Days"]) - int(D)) < int(syn_min_buffer_days):
+                    continue
+            except Exception:
+                pass
+            # Ex-div safeguard
+            try:
+                if next_ex_date is not None:
+                    ed = datetime.strptime(exp, "%Y-%m-%d").date()
+                    if abs((next_ex_date - ed).days) <= 2:
+                        if syn_avoid_exdiv:
+                            continue
+                        intrinsic = max(0.0, S - float(K))
+                        extrinsic = max(0.0, float(prem_short) - intrinsic)
+                        if next_div and next_div > 0.0 and extrinsic < (next_div - 0.02):
+                            continue
+            except Exception:
+                pass
+            net_debit = long_sel["Premium"] + put_choice["Premium"] - prem_short
+            if net_debit <= 0:
+                continue
+            roi_ann = (prem_short / net_debit) * (365.0 / D)
+            exp_risk = check_expiration_risk(
+                expiration_str=exp,
+                strategy="COLLAR",
+                open_interest=_safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0),
+                bid_ask_spread_pct=spread_pct or 0.0
+            )
+            mc_params = dict(
+                S0=S, days=D, iv=iv_for_calc,
+                long_call_strike=float(long_sel["Strike"]), long_call_cost=float(long_sel["Premium"]), long_days_total=int(long_sel["Days"]), long_iv=float(long_sel["IV"])/100.0,
+                put_strike=float(put_choice["Strike"]), put_cost=float(put_choice["Premium"]), put_iv=float(put_choice["IV"])/100.0,
+                short_call_strike=float(K), short_call_premium=float(prem_short), short_iv=iv_for_calc
+            )
+            try:
+                mc = mc_pnl("SYNTHETIC_COLLAR", mc_params, n_paths=1000, mu=0.0, seed=None, rf=risk_free)
+                mc_expected = mc.get("pnl_expected", float("nan"))
+                mc_roi_ann = mc.get("roi_ann_expected", float("nan"))
+                mc_p5 = mc.get("pnl_p5", float("nan"))
+            except Exception:
+                mc_expected = float("nan"); mc_roi_ann = float("nan"); mc_p5 = float("nan")
+            score = unified_risk_reward_score(
+                expected_roi_ann_dec=mc_roi_ann/100.0 if mc_roi_ann == mc_roi_ann else roi_ann/100.0,
+                p5_pnl=mc_p5,
+                capital=net_debit*100.0,
+                spread_pct=spread_pct,
+                oi=_safe_int(_get_num_from_row(r, ["openInterest", "OI"], 0), 0),
+                volume=_safe_int(_get_num_from_row(r, ["volume", "Volume"], 0), 0),
+                cushion_sigma=float("nan")
+            )
+            # Floor cushion sigma using put IV
+            try:
+                exp_mv = expected_move(S, float(put_choice["IV"]) / 100.0 if put_choice.get("IV") else iv_for_calc, T)
+                floor_sigma = ((S - float(put_choice["Strike"])) / exp_mv) if (exp_mv == exp_mv and exp_mv > 0) else float("nan")
+                if floor_sigma == floor_sigma and float(floor_sigma) < float(syn_min_floor_sigma):
+                    continue
+            except Exception:
+                floor_sigma = float("nan")
+
+            rows.append({
+                "Strategy": "SYNTHETIC_COLLAR", "Ticker": ticker, "Price": S, "Exp": exp, "Days": D,
+                "LongExp": long_sel["Exp"], "LongDays": long_sel["Days"],
+                "LongStrike": long_sel["Strike"], "ShortStrike": K, "PutStrike": put_choice["Strike"],
+                "LongCost": long_sel["Premium"], "ShortPrem": prem_short, "PutCost": put_choice["Premium"],
+                "NetDebit": net_debit, "ROI%_ann": roi_ann*100.0,
+                "LongΔ": long_sel["Δ"], "ShortΔ": delta_short, "PutΔ": put_choice["Δ"],
+                "AssignProb": delta_short*100.0,
+                "IV": iv_for_calc*100.0, "ShortIV%": iv_for_calc*100.0, "LongIV%": float(long_sel["IV"]), "PutIV%": float(put_choice["IV"]), "Spread%": spread_pct, "PutCushionσ": float(floor_sigma) if floor_sigma == floor_sigma else float("nan"),
+                "MC_ExpectedPnL": mc_expected, "MC_ROI_ann%": mc_roi_ann,
+                "MC_PnL_p5": mc_p5, "Score": score,
+                "RiskType": "Bounded",
+                "ExpType": exp_risk.get("expiration_type", "") if isinstance(exp_risk, dict) else "",
+                "ExpRisk": exp_risk.get("risk_level", "") if isinstance(exp_risk, dict) else "",
+                "ExpAction": exp_risk.get("action", "") if isinstance(exp_risk, dict) else "",
+                "ExpWarn": exp_risk.get("warning_message", "") if isinstance(exp_risk, dict) else "",
+            })
+    return pd.DataFrame(rows)
 
 
 def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,

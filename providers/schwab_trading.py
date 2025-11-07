@@ -887,6 +887,198 @@ class SchwabTrader:
         
         return order
     
+    def _format_occ_symbol(self, symbol: str, expiration: str, putcall: Literal["C", "P"], strike: float) -> str:
+        """Format an OCC option symbol like 'AAPL 250118C00125000'.
+        Pads underlying to 6 chars, uses yymmdd expiry and 1/1000 strike encoding.
+        """
+        exp_date = datetime.strptime(expiration, "%Y-%m-%d")
+        exp_str = exp_date.strftime("%y%m%d")
+        symbol_padded = f"{symbol:<6}"
+        strike_int = int(round(strike * 1000))
+        return f"{symbol_padded}{exp_str}{putcall}{strike_int:08d}"
+
+    def create_pmcc_order(
+        self,
+        symbol: str,
+        long_expiration: str,
+        long_strike: float,
+        short_expiration: str,
+        short_strike: float,
+        quantity: int,
+        net_debit_limit: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a PMCC (Poor Man's Covered Call) order.
+        2 legs with different expirations (diagonal):
+          - BUY_TO_OPEN deep ITM long call (LEAPS)
+          - SELL_TO_OPEN short-term call
+
+        Schwab accepts multi-leg option orders with different expirations by specifying
+        the proper OCC symbols per leg.
+        """
+        long_call_symbol = self._format_occ_symbol(symbol, long_expiration, "C", float(long_strike))
+        short_call_symbol = self._format_occ_symbol(symbol, short_expiration, "C", float(short_strike))
+
+        order = {
+            "orderType": "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": float(abs(net_debit_limit)),
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": long_call_symbol, "assetType": "OPTION"},
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": short_call_symbol, "assetType": "OPTION"},
+                },
+            ],
+        }
+        return order
+
+    def create_synthetic_collar_order(
+        self,
+        symbol: str,
+        long_expiration: str,
+        long_call_strike: float,
+        short_expiration: str,
+        put_strike: float,
+        short_call_strike: float,
+        quantity: int,
+        net_limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Create a Synthetic Collar order (options-only collar):
+          - BUY_TO_OPEN deep ITM long call (LEAPS) [long_expiration]
+          - BUY_TO_OPEN protective put [short_expiration]
+          - SELL_TO_OPEN short call [short_expiration]
+
+        Net is typically a debit; we allow credit as well by choosing orderType accordingly.
+        """
+        long_call_symbol = self._format_occ_symbol(symbol, long_expiration, "C", float(long_call_strike))
+        put_symbol = self._format_occ_symbol(symbol, short_expiration, "P", float(put_strike))
+        short_call_symbol = self._format_occ_symbol(symbol, short_expiration, "C", float(short_call_strike))
+
+        order = {
+            "orderType": "NET_DEBIT" if float(net_limit_price) >= 0 else "NET_CREDIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": float(abs(net_limit_price)),
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": long_call_symbol, "assetType": "OPTION"},
+                },
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": put_symbol, "assetType": "OPTION"},
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": short_call_symbol, "assetType": "OPTION"},
+                },
+            ],
+        }
+        return order
+
+    def create_pmcc_exit_order(
+        self,
+        symbol: str,
+        long_expiration: str,
+        long_strike: float,
+        short_expiration: str,
+        short_strike: float,
+        quantity: int,
+        net_limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Exit a PMCC position by closing both legs:
+          - BUY_TO_CLOSE the short call
+          - SELL_TO_CLOSE the long call
+        """
+        long_call_symbol = self._format_occ_symbol(symbol, long_expiration, "C", float(long_strike))
+        short_call_symbol = self._format_occ_symbol(symbol, short_expiration, "C", float(short_strike))
+
+        order = {
+            "orderType": "NET_CREDIT" if float(net_limit_price) >= 0 else "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": float(abs(net_limit_price)),
+            "orderLegCollection": [
+                {  # Close short call
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": short_call_symbol, "assetType": "OPTION"},
+                },
+                {  # Close long call
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": long_call_symbol, "assetType": "OPTION"},
+                },
+            ],
+        }
+        return order
+
+    def create_synthetic_collar_exit_order(
+        self,
+        symbol: str,
+        long_expiration: str,
+        long_call_strike: float,
+        short_expiration: str,
+        put_strike: float,
+        short_call_strike: float,
+        quantity: int,
+        net_limit_price: float,
+        duration: Literal["DAY", "GTC"] = "DAY"
+    ) -> Dict[str, Any]:
+        """
+        Exit a Synthetic Collar position by closing all legs:
+          - BUY_TO_CLOSE short call
+          - SELL_TO_CLOSE long call
+          - SELL_TO_CLOSE long put
+        """
+        long_call_symbol = self._format_occ_symbol(symbol, long_expiration, "C", float(long_call_strike))
+        put_symbol = self._format_occ_symbol(symbol, short_expiration, "P", float(put_strike))
+        short_call_symbol = self._format_occ_symbol(symbol, short_expiration, "C", float(short_call_strike))
+
+        order = {
+            "orderType": "NET_CREDIT" if float(net_limit_price) >= 0 else "NET_DEBIT",
+            "session": "NORMAL",
+            "duration": duration,
+            "orderStrategyType": "SINGLE",
+            "price": float(abs(net_limit_price)),
+            "orderLegCollection": [
+                {  # Close short call
+                    "instruction": "BUY_TO_CLOSE",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": short_call_symbol, "assetType": "OPTION"},
+                },
+                {  # Close long call
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": long_call_symbol, "assetType": "OPTION"},
+                },
+                {  # Close long put
+                    "instruction": "SELL_TO_CLOSE",
+                    "quantity": int(quantity),
+                    "instrument": {"symbol": put_symbol, "assetType": "OPTION"},
+                },
+            ],
+        }
+        return order
+
     def create_iron_condor_order(
         self,
         symbol: str,

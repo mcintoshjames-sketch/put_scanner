@@ -29,11 +29,18 @@ def _safe_float(x, default=float("nan")):
 
 
 def _norm_cdf(x):
-    """Standard normal cumulative distribution function."""
-    try:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-    except Exception:
-        return float("nan")
+    """Standard normal cumulative distribution function.
+
+    Accepts scalars or numpy arrays. Uses vectorized numpy.erf when possible.
+    """
+    x_arr = np.asarray(x, dtype=float)
+    # Prefer numpy's erf if available (fast ufunc). Some builds may not expose np.erf.
+    np_erf = getattr(np, "erf", None)
+    if np_erf is not None:
+        return 0.5 * (1.0 + np_erf(x_arr / np.sqrt(2.0)))
+    # Robust fallback: vectorize math.erf over numpy arrays
+    v_erf = np.vectorize(math.erf, otypes=[float])
+    return 0.5 * (1.0 + v_erf(x_arr / np.sqrt(2.0)))
 
 
 # ----------------------------- Black-Scholes & Greeks -----------------------------
@@ -575,6 +582,86 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         spread_width = buy_strike - sell_strike
         capital_per_share = max(spread_width - net_credit, 1e-6)
     
+    elif strategy == "PMCC":
+        # Poor Man's Covered Call (Diagonal): Long deep ITM LEAPS call + Short near-term call
+        # Params:
+        #   long_call_strike, long_call_cost, long_days_total, long_iv
+        #   short_call_strike, short_call_premium, short_days (sim horizon), short_iv
+        # P&L at short expiry approximated as (value of long call with remaining time - initial cost)
+        # + short call premium - intrinsic short call payoff.
+        long_K = float(params["long_call_strike"])
+        long_cost = float(params["long_call_cost"])  # debit paid per share
+        long_days_total = int(params.get("long_days_total", days))
+        long_remaining_days = max(long_days_total - days, 1)
+        short_K = float(params["short_call_strike"])
+        short_prem = float(params["short_call_premium"])  # credit per share
+        # IV handling
+        long_iv = float(params.get("long_iv", sigma))
+        short_iv = float(params.get("short_iv", sigma))
+        # Remaining time for long call after short leg expires
+        T_long_remaining = long_remaining_days / 365.0
+        # Reprice long call at horizon for each path using Black-Scholes approximation
+        # Use same drifted terminal prices S_T already simulated.
+        # Avoid importing bs_call_price here (would create circular if renamed); replicate minimal formula.
+        def _reprice_long_call(S_T_path):
+            # Use Black-Scholes with dividend yield 0 for simplicity
+            S = S_T_path
+            K = long_K
+            vol = max(1e-6, min(long_iv, 3.0))
+            T_rem = max(T_long_remaining, 1e-6)
+            d1 = (np.log(S / K) + (rf + 0.5 * vol**2) * T_rem) / (vol * np.sqrt(T_rem))
+            d2 = d1 - vol * np.sqrt(T_rem)
+            call_val = S * _norm_cdf(d1) - K * np.exp(-rf * T_rem) * _norm_cdf(d2)
+            return call_val
+        long_call_vals = _reprice_long_call(S_T)
+        intrinsic_short = np.maximum(0.0, S_T - short_K)
+        pnl_per_share = (long_call_vals - long_cost) + short_prem - intrinsic_short
+        # Capital at risk approximated as net debit: long cost - short premium
+        capital_per_share = max(long_cost - short_prem, 1e-6)
+
+    elif strategy == "SYNTHETIC_COLLAR":
+        # Synthetic Collar: Long deep ITM call (stock proxy) + Long protective put + Short OTM call
+        # Params:
+        #   long_call_strike, long_call_cost, long_days_total, long_iv
+        #   put_strike, put_cost, put_iv
+        #   short_call_strike, short_call_premium, short_iv
+        long_K = float(params["long_call_strike"])
+        long_cost = float(params["long_call_cost"])  # debit per share
+        long_days_total = int(params.get("long_days_total", days))
+        long_remaining_days = max(long_days_total - days, 1)
+        put_K = float(params["put_strike"])
+        put_cost = float(params["put_cost"])  # debit
+        short_K = float(params["short_call_strike"])
+        short_prem = float(params["short_call_premium"])  # credit
+        long_iv = float(params.get("long_iv", sigma))
+        put_iv = float(params.get("put_iv", sigma))
+        short_iv = float(params.get("short_iv", sigma))
+        # At the horizon (short leg expiry), the LEAPS call still has time remaining,
+        # while the protective put expires now. Reflect that explicitly:
+        T_long_remaining = long_remaining_days / 365.0
+        T_put_remaining = 1e-6  # effectively intrinsic at short expiry
+
+        def _bs_call_val(S, K, vol, T_rem):
+            vol = max(1e-6, min(vol, 3.0))
+            T_rem = max(T_rem, 1e-6)
+            d1 = (np.log(S / K) + (rf + 0.5 * vol**2) * T_rem) / (vol * np.sqrt(T_rem))
+            d2 = d1 - vol * np.sqrt(T_rem)
+            return S * _norm_cdf(d1) - K * np.exp(-rf * T_rem) * _norm_cdf(d2)
+        def _bs_put_val(S, K, vol, T_rem):
+            vol = max(1e-6, min(vol, 3.0))
+            T_rem = max(T_rem, 1e-6)
+            d1 = (np.log(S / K) + (rf + 0.5 * vol**2) * T_rem) / (vol * np.sqrt(T_rem))
+            d2 = d1 - vol * np.sqrt(T_rem)
+            # Put via parity
+            call_val = S * _norm_cdf(d1) - K * np.exp(-rf * T_rem) * _norm_cdf(d2)
+            put_val = call_val - S + K * np.exp(-rf * T_rem)
+            return put_val
+        long_call_vals = _bs_call_val(S_T, long_K, long_iv, T_long_remaining)
+        put_vals = _bs_put_val(S_T, put_K, put_iv, T_put_remaining)
+        intrinsic_short = np.maximum(0.0, S_T - short_K)
+        pnl_per_share = (long_call_vals - long_cost) + (put_vals - put_cost) + short_prem - intrinsic_short
+        capital_per_share = max(long_cost + put_cost - short_prem, 1e-6)
+
     else:
         raise ValueError(f"Unknown strategy for MC: {strategy}")
 

@@ -130,6 +130,8 @@ from strategy_analysis import (
     analyze_iron_condor,
     analyze_bull_put_spread as _analyze_bull_put_spread_impl,
     analyze_bear_call_spread as _analyze_bear_call_spread_impl,
+    analyze_pmcc,
+    analyze_synthetic_collar,
     prescreen_tickers
 )
 # Thread-safe diagnostics counters (accessible from worker threads)
@@ -1405,6 +1407,32 @@ def best_practices(strategy):
 # ---------- Strategy Fit & Runbook helpers ----------
 
 
+def _add_adj_roi_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Add ROI%_ann_adj column preferring MC_ROI_ann% when available.
+    Leaves original DataFrame columns otherwise. Returns new DataFrame reference.
+    """
+    try:
+        if df is None or df.empty:
+            return df
+        df = df.copy()
+        mc_col = None
+        for cand in ["MC_ROI_ann%", "MC_ROI_ann", "mc_roi_ann"]:
+            if cand in df.columns:
+                mc_col = cand
+                break
+        base_col = "ROI%_ann" if "ROI%_ann" in df.columns else None
+        if mc_col:
+            if base_col:
+                df["ROI%_ann_adj"] = df[mc_col].fillna(df[base_col])
+            else:
+                df["ROI%_ann_adj"] = df[mc_col]
+        elif base_col:
+            df["ROI%_ann_adj"] = df[base_col]
+        return df
+    except Exception:
+        return df
+
+
 def compute_put_delta_for_row(row, risk_free, div_y):
     S = float(_series_get(row, "Price"))
     K = float(_series_get(row, "Strike"))
@@ -1836,6 +1864,46 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
             else:
                 checks.append(("Δ target (short call)", "⚠️", f"{delta:.2f} (prefer ~0.15-0.30)"))
 
+    elif strategy == "PMCC":
+        # Vega term structure: compare long LEAPS IV vs short IV if available
+        long_iv = float(_series_get(row, "LongIV%", float("nan")))
+        short_iv = float(_series_get(row, "ShortIV%", float("nan")))
+        if long_iv == long_iv and short_iv == short_iv:
+            term_diff = long_iv - short_iv
+            if term_diff < -5.0:
+                checks.append(("Vega term structure", "⚠️", f"Long IV {long_iv:.1f}% << Short IV {short_iv:.1f}% (calendar risk)"))
+            elif long_iv < 15.0 and short_iv < 15.0:
+                checks.append(("Vega term structure", "⚠️", f"Low IV regime (L {long_iv:.1f}%, S {short_iv:.1f}%)"))
+            else:
+                checks.append(("Vega term structure", "✅", f"L {long_iv:.1f}% vs S {short_iv:.1f}%"))
+        else:
+            checks.append(("Vega term structure", "⚠️", "n/a"))
+
+    elif strategy == "SYNTHETIC_COLLAR":
+        # Vega term structure
+        long_iv = float(_series_get(row, "LongIV%", float("nan")))
+        short_iv = float(_series_get(row, "ShortIV%", float("nan")))
+        if long_iv == long_iv and short_iv == short_iv:
+            term_diff = long_iv - short_iv
+            if term_diff < -5.0:
+                checks.append(("Vega term structure", "⚠️", f"Long IV {long_iv:.1f}% << Short IV {short_iv:.1f}% (calendar risk)"))
+            elif long_iv < 15.0 and short_iv < 15.0:
+                checks.append(("Vega term structure", "⚠️", f"Low IV regime (L {long_iv:.1f}%, S {short_iv:.1f}%)"))
+            else:
+                checks.append(("Vega term structure", "✅", f"L {long_iv:.1f}% vs S {short_iv:.1f}%"))
+        else:
+            checks.append(("Vega term structure", "⚠️", "n/a"))
+
+        # Floor cushion sigma if provided (no data reconstruction here)
+        put_cushion = float(_series_get(row, "PutCushionσ", float("nan")))
+        if put_cushion == put_cushion:
+            if put_cushion >= thresholds.get("min_floor_sigma", 1.0):
+                checks.append(("Put floor cushion", "✅", f"{put_cushion:.2f}σ"))
+            else:
+                checks.append(("Put floor cushion", "⚠️", f"{put_cushion:.2f}σ (< {thresholds.get('min_floor_sigma', 1.0)}σ)"))
+        else:
+            checks.append(("Put floor cushion", "⚠️", "n/a"))
+
     df = pd.DataFrame(checks, columns=["Check", "Status", "Notes"])
     return df, flags
 
@@ -2106,6 +2174,83 @@ def build_runbook(strategy, row, *, contracts=1, capture_pct=0.70,
             "• Keep spread width consistent (same risk profile)"
         ]
 
+    elif strategy == "PMCC":
+        long_strike = float(_series_get(row, "LongStrike"))
+        short_strike = float(_series_get(row, "ShortStrike"))
+        net_debit = float(_series_get(row, "NetDebit"))
+        short_prem = float(_series_get(row, "ShortPrem", float("nan")))
+        long_cost = float(_series_get(row, "LongCost", float("nan")))
+        tgt_close_short = max(0.05, short_prem * (1.0 - capture_pct)) if short_prem == short_prem else float("nan")
+        lines += [
+            f"# RUNBOOK — PMCC (Poor Man's Covered Call) ({ticker})",
+            hr,
+            "STRUCTURE:",
+            f"• Long deep ITM LEAPS call (synthetic shares): Strike {int(long_strike)}",
+            f"• Short near-term call: Strike {int(short_strike)} (Δ ≈ row['ShortΔ'])",
+            f"• Net Debit ≈ {_fmt_usd(net_debit)} per spread (capital at risk)",
+            "",
+            "ENTRY (2-leg combo preferred):",
+            f"• BUY TO OPEN  {contracts}  {ticker}  {exp}  {int(long_strike)} CALL (LEAPS)  LIMIT ≈ {_fmt_usd(long_cost)}",
+            f"• SELL TO OPEN {contracts}  {ticker}  {exp}  {int(short_strike)} CALL  LIMIT ≥ {_fmt_usd(short_prem)}",
+            "",
+            "PROFIT/ROLL TRIGGERS (Short Call):",
+            f"• BTC when mark ≤ {_fmt_usd(tgt_close_short)} (≈ {int(capture_pct*100)}% captured)",
+            "• Roll if short Δ > 0.40 or underlying approaches short strike",
+            "• Roll timing: close current short, open next cycle (keep long LEAPS)",
+            "",
+            "RISK CLOSE‑OUT:",
+            "• If underlying collapses and long call delta < 0.60, reassess position",
+            "• If IV crush erodes long value and short premium low, consider liquidation",
+            "",
+            "EXIT ORDERS:",
+            f"• Profit‑take: BTC short call for LIMIT ≤ {_fmt_usd(tgt_close_short)}",
+            f"• Full unwind: BTC short call + STC long call (if thesis/premium decay complete)",
+            "",
+            "NOTES:",
+            "• Treat long LEAPS delta as synthetic share ownership for risk sizing",
+            "• Avoid earnings weeks that can distort short leg extrinsic",
+        ]
+
+    elif strategy == "SYNTHETIC_COLLAR":
+        long_strike = float(_series_get(row, "LongStrike"))
+        put_strike = float(_series_get(row, "PutStrike"))
+        short_strike = float(_series_get(row, "ShortStrike"))
+        net_debit = float(_series_get(row, "NetDebit"))
+        short_prem = float(_series_get(row, "ShortPrem", float("nan")))
+        long_cost = float(_series_get(row, "LongCost", float("nan")))
+        put_cost = float(_series_get(row, "PutCost", float("nan")))
+        tgt_close_short = max(0.05, short_prem * (1.0 - capture_pct)) if short_prem == short_prem else float("nan")
+        lines += [
+            f"# RUNBOOK — SYNTHETIC COLLAR ({ticker})",
+            hr,
+            "STRUCTURE (options-only stock + collar):",
+            f"• Long deep ITM call (synthetic shares): Strike {int(long_strike)}",
+            f"• Long protective put: Strike {int(put_strike)}",
+            f"• Short OTM call: Strike {int(short_strike)}",
+            f"• Net Debit ≈ {_fmt_usd(net_debit)} (long call + put − short call)",
+            "",
+            "ENTRY (3-leg combo preferred):",
+            f"• BUY TO OPEN  {contracts}  {ticker}  {exp}  {int(long_strike)} CALL  LIMIT ≈ {_fmt_usd(long_cost)}",
+            f"• BUY TO OPEN  {contracts}  {ticker}  {exp}  {int(put_strike)} PUT   LIMIT ≈ {_fmt_usd(put_cost)}",
+            f"• SELL TO OPEN {contracts}  {ticker}  {exp}  {int(short_strike)} CALL LIMIT ≥ {_fmt_usd(short_prem)}",
+            "",
+            "PROFIT/ROLL (Short Call):",
+            f"• BTC when short call mark ≤ {_fmt_usd(tgt_close_short)} (≈ {int(capture_pct*100)}% captured)",
+            "• Roll when short Δ > 0.40 or price trends toward cap",
+            "",
+            "RISK CLOSE‑OUT:",
+            f"• If underlying approaches floor (put strike {int(put_strike)}), evaluate exiting put + long call",
+            "• If long call delta decays <0.60 and premium stagnates, consider unwind",
+            "",
+            "EXIT ORDERS:",
+            "• Profit‑take: BTC short call only (maintain collar if still needed)",
+            "• Full unwind: BTC short call + STC long call + STC long put",
+            "",
+            "NOTES:",
+            "• Provides defined downside (put) & capped upside (short call)",
+            "• Capital efficient alternative to stock+collar for high-priced names",
+        ]
+
     return "\n".join(lines)
 
 # ---------- Stress Test engine ----------
@@ -2155,6 +2300,85 @@ def run_stress(strategy, row, *, shocks_pct, horizon_days, r, div_y,
             out.append({
                 "Shock%": sp, "Price": S1,
                 "Put_mark": put_now, "Put_P&L": pnl_put,
+                "Total_P&L": total,
+                "ROI_on_cap%": cycle_roi * 100.0,
+                "Ann_ROI%": ann_roi * 100.0
+            })
+        return pd.DataFrame(out)
+
+    if strategy == "PMCC":
+        # Poor Man's Covered Call stress: Long deep ITM LEAPS call + Short near-term call
+        K_long = float(row["LongStrike"])
+        long_cost = float(row["LongCost"])  # per share debit
+        K_short = float(row["ShortStrike"])
+        short_prem = float(row["ShortPrem"])  # per share credit
+        long_days_total = int(row.get("LongDays", int(row["Days"])) or int(row["Days"]))
+
+        for sp in shocks_pct:
+            S1 = S0 * (1.0 + sp / 100.0)
+            iv1 = max(0.02, iv_base + (iv_down_shift if sp < 0 else iv_up_shift))
+            # Remaining time for short leg after horizon
+            T_short = max(T, 1e-6)
+            # Remaining time for long after horizon
+            long_days_rem = max(long_days_total - max(horizon_days, 0), 1)
+            T_long = max(long_days_rem / 365.0, 1e-6)
+
+            long_call_now = bs_call_price(S1, K_long, r, div_y, iv1, T_long)
+            short_call_now = bs_call_price(S1, K_short, r, div_y, iv1, T_short)
+
+            pnl_long_call = (long_call_now - long_cost) * 100.0
+            pnl_short_call = (short_prem - short_call_now) * 100.0
+            total = pnl_long_call + pnl_short_call
+            capital = max((long_cost - short_prem) * 100.0, 1e-6)
+            cycle_roi = total / capital
+            ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
+
+            out.append({
+                "Shock%": sp, "Price": S1,
+                "LongCall_mark": long_call_now, "ShortCall_mark": short_call_now,
+                "LongCall_P&L": pnl_long_call, "ShortCall_P&L": pnl_short_call,
+                "Total_P&L": total,
+                "ROI_on_cap%": cycle_roi * 100.0,
+                "Ann_ROI%": ann_roi * 100.0
+            })
+        return pd.DataFrame(out)
+
+    if strategy == "SYNTHETIC_COLLAR":
+        # Options-only collar: Long deep ITM call (LEAPS) + Long protective put + Short OTM call
+        K_long = float(row["LongStrike"])
+        long_cost = float(row["LongCost"])   # per share debit
+        K_put = float(row["PutStrike"])      # protective put
+        put_cost = float(row["PutCost"])     # per share debit
+        K_short = float(row["ShortStrike"])  # short call
+        short_prem = float(row["ShortPrem"]) # per share credit
+        long_days_total = int(row.get("LongDays", int(row["Days"])) or int(row["Days"]))
+
+        for sp in shocks_pct:
+            S1 = S0 * (1.0 + sp / 100.0)
+            iv1 = max(0.02, iv_base + (iv_down_shift if sp < 0 else iv_up_shift))
+            # Remaining times
+            T_short = max(T, 1e-6)  # put and short call share the short expiry
+            long_days_rem = max(long_days_total - max(horizon_days, 0), 1)
+            T_long = max(long_days_rem / 365.0, 1e-6)
+
+            long_call_now = bs_call_price(S1, K_long, r, div_y, iv1, T_long)
+            put_now = bs_put_price(S1, K_put, r, div_y, iv1, T_short)
+            short_call_now = bs_call_price(S1, K_short, r, div_y, iv1, T_short)
+
+            pnl_long_call = (long_call_now - long_cost) * 100.0
+            pnl_put = (put_now - put_cost) * 100.0
+            pnl_short_call = (short_prem - short_call_now) * 100.0
+            total = pnl_long_call + pnl_put + pnl_short_call
+            capital = max((long_cost + put_cost - short_prem) * 100.0, 1e-6)
+            cycle_roi = total / capital
+            ann_days = T0 * 365.0 if horizon_days == 0 else float(horizon_days)
+            ann_roi = _safe_annualize_roi(cycle_roi, ann_days)
+
+            out.append({
+                "Shock%": sp, "Price": S1,
+                "LongCall_mark": long_call_now, "Put_mark": put_now, "ShortCall_mark": short_call_now,
+                "LongCall_P&L": pnl_long_call, "Put_P&L": pnl_put, "ShortCall_P&L": pnl_short_call,
                 "Total_P&L": total,
                 "ROI_on_cap%": cycle_roi * 100.0,
                 "Ann_ROI%": ann_roi * 100.0
@@ -2374,7 +2598,7 @@ if "USE_POLYGON" in globals() and USE_POLYGON and "POLY" in globals() and POLY i
 st.title("📊 Options Income Strategy Lab — CSP vs Covered Call vs Collar")
 
 # Initialize session state
-for key in ["df_csp", "df_cc", "df_collar", "df_iron_condor", "df_bull_put_spread", "df_bear_call_spread"]:
+for key in ["df_csp", "df_cc", "df_collar", "df_iron_condor", "df_bull_put_spread", "df_bear_call_spread", "df_pmcc", "df_synthetic_collar"]:
     if key not in st.session_state:
         st.session_state[key] = pd.DataFrame()
 
@@ -2812,18 +3036,64 @@ with st.sidebar:
         help="Minimum annualized return on risk capital")
 
     st.divider()
+    st.subheader("PMCC (Poor Man's Covered Call)")
+    pmcc_long_delta = st.slider(
+        "LEAPS Long Call Δ target", 0.60, 0.95, 0.80, step=0.01, key="pmcc_long_delta",
+        help="Target delta for deep ITM long call (synthetic shares)")
+    pmcc_long_days_min, pmcc_long_days_max = st.slider(
+        "LEAPS Days Range", 120, 720, (180, 400), step=5, key="pmcc_long_days_range",
+        help="Desired expiration window for the long LEAPS leg")
+    pmcc_short_days_min, pmcc_short_days_max = st.slider(
+        "Short Call Days Range", 7, 90, (21, 60), step=1, key="pmcc_short_days_range",
+        help="Expiration window for the short covered call overlay")
+    pmcc_short_delta_lo, pmcc_short_delta_hi = st.slider(
+        "Short Call Δ range", 0.05, 0.60, (0.20, 0.35), step=0.01, key="pmcc_short_delta_range",
+        help="Acceptable delta range for the short call leg")
+    pmcc_min_buffer_days = st.slider(
+        "Min LEAPS remaining days after short cycle", 0, 365, 120, step=5, key="pmcc_min_buffer_days",
+        help="Minimum remaining days on LEAPS after the short call expires")
+    pmcc_avoid_exdiv = st.checkbox("Avoid ex-div weeks (short call)", value=True, key="pmcc_avoid_exdiv")
+    long_leg_min_oi = st.number_input("Long leg min OI", value=50, step=10, key="pmcc_long_leg_min_oi")
+    long_leg_max_spread = st.slider("Long leg max spread %", 1.0, 40.0, 15.0, step=0.5, key="pmcc_long_leg_max_spread")
+
+    st.divider()
+    st.subheader("Synthetic Collar")
+    syn_long_delta = st.slider(
+        "Long Call Δ target", 0.60, 0.95, 0.80, step=0.01, key="syn_long_delta",
+        help="Target delta for deep ITM long call (synthetic shares)")
+    syn_put_delta_abs = st.slider(
+        "Protective Put Δ target (abs)", 0.05, 0.30, 0.15, step=0.01, key="syn_put_delta_abs",
+        help="Absolute delta target for the long protective put")
+    syn_long_days_min, syn_long_days_max = st.slider(
+        "LEAPS Days Range (Synthetic)", 120, 720, (180, 400), step=5, key="syn_long_days_range",
+        help="Desired expiration window for the long LEAPS leg")
+    syn_short_days_min, syn_short_days_max = st.slider(
+        "Short Call Days Range (Synthetic)", 7, 90, (21, 60), step=1, key="syn_short_days_range",
+        help="Expiration window for the short call overlay")
+    syn_short_delta_lo, syn_short_delta_hi = st.slider(
+        "Short Call Δ range (Synthetic)", 0.05, 0.60, (0.20, 0.35), step=0.01, key="syn_short_delta_range",
+        help="Acceptable delta range for the short call leg")
+    syn_min_buffer_days = st.slider(
+        "Min LEAPS remaining days after short cycle (Synthetic)", 0, 365, 120, step=5, key="syn_min_buffer_days")
+    syn_avoid_exdiv = st.checkbox("Avoid ex-div weeks (Synthetic short call)", value=True, key="syn_avoid_exdiv")
+    syn_min_floor_sigma = st.slider("Min floor cushion σ (Synthetic)", 0.0, 3.0, 1.0, step=0.1, key="syn_min_floor_sigma")
+    syn_put_leg_min_oi = st.number_input("Protective put min OI", value=50, step=10, key="syn_put_leg_min_oi")
+    syn_put_leg_max_spread = st.slider("Protective put max spread %", 1.0, 40.0, 15.0, step=0.5, key="syn_put_leg_max_spread")
+
+    st.divider()
     run_btn = st.button("🔎 Scan Strategies")
 
 
 @st.cache_data(show_spinner=True, ttl=120)
 def run_scans(tickers, params):
     """
-    Run CSP, CC, Collar, Iron Condor, Bull Put Spread, and Bear Call Spread scans in parallel across tickers.
-    Uses ThreadPoolExecutor for concurrent processing.
+    Run CSP, CC, Collar, Iron Condor, Bull Put Spread, Bear Call Spread plus PMCC & Synthetic Collar scans across tickers.
+    Primary six strategies are scanned in parallel; PMCC & Synthetic Collar are computed per-ticker inside the worker.
     """
     # Handle empty ticker list
     if not tickers or len(tickers) == 0:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}}
+        return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {"CSP": {}})
 
     csp_all = []
     cc_all = []
@@ -2831,10 +3101,12 @@ def run_scans(tickers, params):
     ic_all = []
     bps_all = []  # Bull Put Spread
     bcs_all = []  # Bear Call Spread
+    pmcc_all = []  # PMCC
+    syn_all = []   # Synthetic Collar
     scan_counters = {"CSP": {}}
 
     def scan_ticker(t):
-        """Scan a single ticker for all strategies"""
+        """Scan a single ticker for all strategies (returns tuple of DataFrames)."""
         # CSP scan
         csp, csp_cnt = analyze_csp(
             t,
@@ -2934,7 +3206,46 @@ def run_scans(tickers, params):
             bill_yield=params["bill_yield"]
         )
 
-        return csp, csp_cnt, cc, col, ic, bps, bcs
+        # PMCC & Synthetic Collar (best-effort)
+        try:
+            pmcc = analyze_pmcc(
+                t,
+                target_long_delta=params.get("pmcc_long_delta", 0.80),
+                long_min_days=params.get("pmcc_long_days_min", 180),
+                long_max_days=params.get("pmcc_long_days_max", 400),
+                short_min_days=params.get("pmcc_short_days_min", 21),
+                short_max_days=params.get("pmcc_short_days_max", 60),
+                short_delta_lo=params.get("pmcc_short_delta_lo", 0.20),
+                short_delta_hi=params.get("pmcc_short_delta_hi", 0.35),
+                min_oi=params.get("min_oi", 50),
+                max_spread=params.get("max_spread", 15.0),
+                earn_window=params.get("earn_window", 7),
+                risk_free=params.get("risk_free", 0.0),
+                bill_yield=params.get("bill_yield", 0.0),
+            )
+        except Exception:
+            pmcc = pd.DataFrame()
+        try:
+            syn = analyze_synthetic_collar(
+                t,
+                target_long_delta=params.get("syn_long_delta", 0.80),
+                put_delta_target=-abs(params.get("syn_put_delta_abs", 0.15)),
+                long_min_days=params.get("syn_long_days_min", 180),
+                long_max_days=params.get("syn_long_days_max", 400),
+                short_min_days=params.get("syn_short_days_min", 21),
+                short_max_days=params.get("syn_short_days_max", 60),
+                short_delta_lo=params.get("syn_short_delta_lo", 0.20),
+                short_delta_hi=params.get("syn_short_delta_hi", 0.35),
+                min_oi=params.get("min_oi", 50),
+                max_spread=params.get("max_spread", 15.0),
+                earn_window=params.get("earn_window", 7),
+                risk_free=params.get("risk_free", 0.0),
+                bill_yield=params.get("bill_yield", 0.0),
+            )
+        except Exception:
+            syn = pd.DataFrame()
+
+        return csp, csp_cnt, cc, col, ic, bps, bcs, pmcc, syn
 
     # Parallel execution with ThreadPoolExecutor
     max_workers = min(len(tickers), 8)  # Cap at 8 concurrent workers
@@ -2948,7 +3259,7 @@ def run_scans(tickers, params):
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
-                csp, csp_cnt, cc, col, ic, bps, bcs = future.result()
+                csp, csp_cnt, cc, col, ic, bps, bcs, pmcc, syn = future.result()
 
                 # Accumulate results
                 if not csp.empty:
@@ -2963,6 +3274,10 @@ def run_scans(tickers, params):
                     bps_all.append(bps)
                 if not bcs.empty:
                     bcs_all.append(bcs)
+                if not pmcc.empty:
+                    pmcc_all.append(pmcc)
+                if not syn.empty:
+                    syn_all.append(syn)
 
                 # Aggregate counters
                 for k, v in csp_cnt.items():
@@ -2987,6 +3302,8 @@ def run_scans(tickers, params):
         bps_all, ignore_index=True) if bps_all else pd.DataFrame()
     df_bcs = pd.concat(
         bcs_all, ignore_index=True) if bcs_all else pd.DataFrame()
+    df_pmcc = pd.concat(pmcc_all, ignore_index=True) if pmcc_all else pd.DataFrame()
+    df_synthetic_collar = pd.concat(syn_all, ignore_index=True) if syn_all else pd.DataFrame()
 
     # Optional hard filter: drop negative MC expected P&L rows across all strategies
     if params.get("require_nonneg_mc", False):
@@ -3003,8 +3320,11 @@ def run_scans(tickers, params):
         df_ic = _apply_mc_filter(df_ic)
         df_bps = _apply_mc_filter(df_bps)
         df_bcs = _apply_mc_filter(df_bcs)
+        df_pmcc = _apply_mc_filter(df_pmcc)
+        df_synthetic_collar = _apply_mc_filter(df_synthetic_collar)
 
-    return df_csp, df_cc, df_col, df_ic, df_bps, df_bcs, scan_counters
+    return (df_csp, df_cc, df_col, df_ic, df_bps, df_bcs,
+            df_pmcc, df_synthetic_collar, scan_counters)
 
 
 # Run scans
@@ -3031,6 +3351,34 @@ if run_btn:
             cs_spread_width=float(cs_spread_width),
             cs_target_delta=float(cs_target_delta),
             cs_min_roi=float(cs_min_roi),
+            # PMCC controls
+            pmcc_long_delta=float(pmcc_long_delta),
+            pmcc_long_days_min=int(pmcc_long_days_min),
+            pmcc_long_days_max=int(pmcc_long_days_max),
+            pmcc_short_days_min=int(pmcc_short_days_min),
+            pmcc_short_days_max=int(pmcc_short_days_max),
+            pmcc_short_delta_lo=float(pmcc_short_delta_lo),
+            pmcc_short_delta_hi=float(pmcc_short_delta_hi),
+            pmcc_min_buffer_days=int(pmcc_min_buffer_days),
+            pmcc_avoid_exdiv=bool(pmcc_avoid_exdiv),
+            pmcc_long_leg_min_oi=int(long_leg_min_oi),
+            pmcc_long_leg_max_spread=float(long_leg_max_spread),
+            # Synthetic Collar controls
+            syn_long_delta=float(syn_long_delta),
+            syn_put_delta_abs=float(syn_put_delta_abs),
+            syn_long_days_min=int(syn_long_days_min),
+            syn_long_days_max=int(syn_long_days_max),
+            syn_short_days_min=int(syn_short_days_min),
+            syn_short_days_max=int(syn_short_days_max),
+            syn_short_delta_lo=float(syn_short_delta_lo),
+            syn_short_delta_hi=float(syn_short_delta_hi),
+            syn_min_buffer_days=int(syn_min_buffer_days),
+            syn_avoid_exdiv=bool(syn_avoid_exdiv),
+            syn_min_floor_sigma=float(syn_min_floor_sigma),
+            syn_long_leg_min_oi=int(long_leg_min_oi),
+            syn_long_leg_max_spread=float(long_leg_max_spread),
+            syn_put_leg_min_oi=int(syn_put_leg_min_oi),
+            syn_put_leg_max_spread=float(syn_put_leg_max_spread),
             min_oi=int(min_oi), max_spread=float(max_spread),
             earn_window=int(earn_window), risk_free=float(risk_free),
             per_contract_cap=per_contract_cap,
@@ -3039,21 +3387,25 @@ if run_btn:
         )
         try:
             with st.spinner("Scanning..."):
-                df_csp, df_cc, df_collar, df_iron_condor, df_bull_put_spread, df_bear_call_spread, scan_counters = run_scans(
-                    tickers, opts)
+                (df_csp, df_cc, df_collar, df_iron_condor, df_bull_put_spread, df_bear_call_spread,
+                 df_pmcc, df_synthetic_collar, scan_counters) = run_scans(tickers, opts)
+
             st.session_state["df_csp"] = df_csp
             st.session_state["df_cc"] = df_cc
             st.session_state["df_collar"] = df_collar
             st.session_state["df_iron_condor"] = df_iron_condor
             st.session_state["df_bull_put_spread"] = df_bull_put_spread
             st.session_state["df_bear_call_spread"] = df_bear_call_spread
+            st.session_state["df_pmcc"] = df_pmcc
+            st.session_state["df_synthetic_collar"] = df_synthetic_collar
             st.session_state["scan_counters"] = scan_counters
 
             # Show results summary
-            total_results = len(df_csp) + len(df_cc) + len(df_collar) + len(df_iron_condor) + len(df_bull_put_spread) + len(df_bear_call_spread)
+            total_results = (len(df_csp) + len(df_cc) + len(df_pmcc) + len(df_synthetic_collar) +
+                             len(df_collar) + len(df_iron_condor) + len(df_bull_put_spread) + len(df_bear_call_spread))
             if total_results > 0:
                 st.success(
-                    f"✅ Scan complete! Found {len(df_csp)} CSP, {len(df_cc)} CC, {len(df_collar)} Collar, {len(df_iron_condor)} IC, {len(df_bull_put_spread)} Bull Put, {len(df_bear_call_spread)} Bear Call")
+                    f"✅ Scan complete! Found {len(df_csp)} CSP | {len(df_cc)} CC | {len(df_pmcc)} PMCC | {len(df_synthetic_collar)} Synthetic Collar | {len(df_collar)} Collar | {len(df_iron_condor)} IC | {len(df_bull_put_spread)} Bull Put | {len(df_bear_call_spread)} Bear Call")
             else:
                 st.warning(
                     "No opportunities found with current filters. Try loosening your criteria.")
@@ -3113,6 +3465,73 @@ df_collar = st.session_state["df_collar"]
 df_iron_condor = st.session_state["df_iron_condor"]
 df_bull_put_spread = st.session_state["df_bull_put_spread"]
 df_bear_call_spread = st.session_state["df_bear_call_spread"]
+df_pmcc = st.session_state.get("df_pmcc", pd.DataFrame())
+df_synthetic_collar = st.session_state.get("df_synthetic_collar", pd.DataFrame())
+
+# ---------------- RiskType & Assignment Probability Augmentation ----------------
+# Some analyzers (PMCC, SYNTHETIC_COLLAR) already provide RiskType & AssignProb.
+# Add consistent RiskType classification and assignment probability proxies for other strategies.
+def _classify_risk(strategy: str) -> str:
+    # Return concise risk badge descriptor
+    if strategy in ("CSP",):
+        return "Bounded (cash)"
+    if strategy in ("CC",):
+        return "Bounded (stock)"
+    if strategy in ("COLLAR", "SYNTHETIC_COLLAR", "PMCC"):
+        return "Bounded (hedged)"
+    if strategy in ("IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"):
+        return "Defined"
+    return "Unknown"
+
+def _ensure_risk_and_assignment(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if "RiskType" not in df.columns:
+        df = df.copy()
+        df["RiskType"] = _classify_risk(strategy)
+    # Add AssignProb where applicable (short call structures) if missing
+    if strategy == "CC" and "AssignProb" not in df.columns:
+        # Approx assignment probability by call delta * 100
+        # Delta not in DF explicitly; derive via Black-Scholes if IV present
+        if {"Price", "Strike", "Days", "IV"}.issubset(df.columns):
+            try:
+                from options_math import call_delta
+                risk_free_rate = float(st.session_state.get("risk_free_input", 0.0))
+                div_y_col = "DivYld%" if "DivYld%" in df.columns else None
+                assign_probs = []
+                for _, row in df.iterrows():
+                    try:
+                        S = float(row.get("Price", float("nan")))
+                        K = float(row.get("Strike", float("nan")))
+                        D = int(row.get("Days", 0))
+                        T = max(D,0)/365.0
+                        iv_pct = float(row.get("IV", float("nan")))
+                        iv_dec = iv_pct/100.0 if iv_pct == iv_pct and iv_pct > 0 else 0.20
+                        q = float(row.get(div_y_col, 0.0))/100.0 if div_y_col else 0.0
+                        delta = call_delta(S, K, risk_free_rate, iv_dec, T, q=q)
+                        assign_probs.append(round(delta*100.0,2) if delta==delta else float("nan"))
+                    except Exception:
+                        assign_probs.append(float("nan"))
+                df["AssignProb"] = assign_probs
+            except Exception:
+                pass
+    if strategy == "COLLAR" and "AssignProb" not in df.columns and "CallΔ" in df.columns:
+        df = df.copy()
+        try:
+            df["AssignProb"] = (df["CallΔ"].apply(lambda x: round(x*100.0,2) if x==x else float("nan")))
+        except Exception:
+            df["AssignProb"] = float("nan")
+    return df
+
+# Apply augmentation to each strategy dataframe
+df_csp = _ensure_risk_and_assignment(df_csp, "CSP")
+df_cc = _ensure_risk_and_assignment(df_cc, "CC")
+df_collar = _ensure_risk_and_assignment(df_collar, "COLLAR")
+df_iron_condor = _ensure_risk_and_assignment(df_iron_condor, "IRON_CONDOR")
+df_bull_put_spread = _ensure_risk_and_assignment(df_bull_put_spread, "BULL_PUT_SPREAD")
+df_bear_call_spread = _ensure_risk_and_assignment(df_bear_call_spread, "BEAR_CALL_SPREAD")
+df_pmcc = _ensure_risk_and_assignment(df_pmcc, "PMCC")
+df_synthetic_collar = _ensure_risk_and_assignment(df_synthetic_collar, "SYNTHETIC_COLLAR")
 
 # Apply expiration safety filtering
 allow_nonstandard = st.session_state.get("allow_nonstandard", False)
@@ -3122,6 +3541,8 @@ block_high_risk_multileg = st.session_state.get("block_high_risk_multileg", True
 original_counts = {
     "CSP": len(df_csp),
     "CC": len(df_cc),
+    "PMCC": len(df_pmcc),
+    "Synthetic Collar": len(df_synthetic_collar),
     "Collar": len(df_collar),
     "Iron Condor": len(df_iron_condor),
     "Bull Put Spread": len(df_bull_put_spread),
@@ -3134,6 +3555,8 @@ if not allow_nonstandard:
         df_csp = df_csp[df_csp["ExpAction"] != "BLOCK"].copy()
     if not df_cc.empty and "ExpAction" in df_cc.columns:
         df_cc = df_cc[df_cc["ExpAction"] != "BLOCK"].copy()
+    if not df_pmcc.empty and "ExpAction" in df_pmcc.columns:
+        df_pmcc = df_pmcc[df_pmcc["ExpAction"] != "BLOCK"].copy()
     if not df_collar.empty and "ExpAction" in df_collar.columns:
         df_collar = df_collar[df_collar["ExpAction"] != "BLOCK"].copy()
     if not df_iron_condor.empty and "ExpAction" in df_iron_condor.columns:
@@ -3142,6 +3565,8 @@ if not allow_nonstandard:
         df_bull_put_spread = df_bull_put_spread[df_bull_put_spread["ExpAction"] != "BLOCK"].copy()
     if not df_bear_call_spread.empty and "ExpAction" in df_bear_call_spread.columns:
         df_bear_call_spread = df_bear_call_spread[df_bear_call_spread["ExpAction"] != "BLOCK"].copy()
+    if not df_synthetic_collar.empty and "ExpAction" in df_synthetic_collar.columns:
+        df_synthetic_collar = df_synthetic_collar[df_synthetic_collar["ExpAction"] != "BLOCK"].copy()
 
 if block_high_risk_multileg:
     # Additional blocking for multi-leg strategies: allow Monthly and Weekly Fridays (WARN), block non-standard
@@ -3161,11 +3586,24 @@ if block_high_risk_multileg:
             (df_bear_call_spread["ExpAction"] == "ALLOW") | 
             ((df_bear_call_spread["ExpAction"] == "WARN") & (df_bear_call_spread["ExpRisk"] != "HIGH"))
         ].copy()
+    # Apply similar multi-leg caution to PMCC and Synthetic Collar
+    if not df_pmcc.empty and "ExpAction" in df_pmcc.columns and "ExpRisk" in df_pmcc.columns:
+        df_pmcc = df_pmcc[
+            (df_pmcc["ExpAction"] == "ALLOW") |
+            ((df_pmcc["ExpAction"] == "WARN") & (df_pmcc["ExpRisk"] != "HIGH"))
+        ].copy()
+    if not df_synthetic_collar.empty and "ExpAction" in df_synthetic_collar.columns and "ExpRisk" in df_synthetic_collar.columns:
+        df_synthetic_collar = df_synthetic_collar[
+            (df_synthetic_collar["ExpAction"] == "ALLOW") |
+            ((df_synthetic_collar["ExpAction"] == "WARN") & (df_synthetic_collar["ExpRisk"] != "HIGH"))
+        ].copy()
 
 # Calculate and display filtered counts
 filtered_counts = {
     "CSP": len(df_csp),
     "CC": len(df_cc),
+    "PMCC": len(df_pmcc),
+    "Synthetic Collar": len(df_synthetic_collar),
     "Collar": len(df_collar),
     "Iron Condor": len(df_iron_condor),
     "Bull Put Spread": len(df_bull_put_spread),
@@ -3186,6 +3624,8 @@ if blocked_any and not allow_nonstandard:
     Filtered out non-standard expirations for your protection:
     - CSP: {original_counts['CSP'] - filtered_counts['CSP']} blocked
     - CC: {original_counts['CC'] - filtered_counts['CC']} blocked
+    - PMCC: {original_counts['PMCC'] - filtered_counts['PMCC']} blocked
+    - Synthetic Collar: {original_counts['Synthetic Collar'] - filtered_counts['Synthetic Collar']} blocked
     - Collar: {original_counts['Collar'] - filtered_counts['Collar']} blocked
     - Iron Condor: {original_counts['Iron Condor'] - filtered_counts['Iron Condor']} blocked
     - Bull Put Spread: {original_counts['Bull Put Spread'] - filtered_counts['Bull Put Spread']} blocked
@@ -3201,7 +3641,8 @@ if blocked_any and not allow_nonstandard:
 st.subheader("Selection — applies to Risk, Runbook, and Stress tabs")
 
 # Determine available strategies based on scan results
-_available = [("CSP", df_csp), ("CC", df_cc), ("COLLAR", df_collar), ("IRON_CONDOR", df_iron_condor),
+_available = [("CSP", df_csp), ("CC", df_cc), ("PMCC", df_pmcc), ("SYNTHETIC_COLLAR", df_synthetic_collar),
+              ("COLLAR", df_collar), ("IRON_CONDOR", df_iron_condor),
               ("BULL_PUT_SPREAD", df_bull_put_spread), ("BEAR_CALL_SPREAD", df_bear_call_spread)]
 available_strats = [name for name, df in _available if not df.empty]
 if "sel_strategy" not in st.session_state:
@@ -3211,8 +3652,8 @@ if "sel_strategy" not in st.session_state:
 # Strategy picker (single source of truth)
 sel_strategy = st.selectbox(
     "Strategy",
-    ["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"],
-    index=["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"].index(st.session_state["sel_strategy"]),
+    ["CSP", "CC", "PMCC", "SYNTHETIC_COLLAR", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"],
+    index=["CSP", "CC", "PMCC", "SYNTHETIC_COLLAR", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"].index(st.session_state["sel_strategy"]) if st.session_state.get("sel_strategy") in ["CSP", "CC", "PMCC", "SYNTHETIC_COLLAR", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"] else 0,
     key="sel_strategy",
 )
 
@@ -3232,6 +3673,22 @@ def _keys_for(strategy: str) -> pd.Series:
             df["Ticker"] + " | " + df["Exp"] +
             " | K=" + df["Strike"].astype(str)
         ) if not df.empty else pd.Series([], dtype=str)
+    if strategy == "PMCC":
+        df = df_pmcc
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"] +
+            " | Long=" + df["LongStrike"].astype(str) + " | Short=" + df["ShortStrike"].astype(str)
+        )
+    if strategy == "SYNTHETIC_COLLAR":
+        df = df_synthetic_collar
+        if df.empty:
+            return pd.Series([], dtype=str)
+        return (
+            df["Ticker"] + " | " + df["Exp"] +
+            " | Long=" + df["LongStrike"].astype(str) + " | Put=" + df["PutStrike"].astype(str) + " | Short=" + df["ShortStrike"].astype(str)
+        )
     if strategy == "COLLAR":
         df = df_collar
         if df.empty:
@@ -3306,6 +3763,22 @@ def _get_selected_row():
         df = df_cc
         ks = (df["Ticker"] + " | " + df["Exp"] + " | K=" +
               df["Strike"].astype(str)) if not df.empty else pd.Series([], dtype=str)
+    elif strat == "PMCC":
+        df = df_pmcc
+        if df.empty:
+            return strat, None
+        ks = (
+            df["Ticker"] + " | " + df["Exp"] +
+            " | Long=" + df["LongStrike"].astype(str) + " | Short=" + df["ShortStrike"].astype(str)
+        )
+    elif strat == "SYNTHETIC_COLLAR":
+        df = df_synthetic_collar
+        if df.empty:
+            return strat, None
+        ks = (
+            df["Ticker"] + " | " + df["Exp"] +
+            " | Long=" + df["LongStrike"].astype(str) + " | Put=" + df["PutStrike"].astype(str) + " | Short=" + df["ShortStrike"].astype(str)
+        )
     elif strat == "COLLAR":
         df = df_collar
         if df.empty:
@@ -3342,6 +3815,28 @@ def _get_selected_row():
     if sel.empty:
         return strat, None
     return strat, sel.iloc[0]
+    if strategy == "PMCC":
+        return [
+            "Structure: **Long deep ITM LEAPS call (Δ ~0.75–0.85)** + **Short near-term call (Δ ~0.20–0.35)**.",
+            "Capital: Net debit (LEAPS cost − short call credit) far lower than 100 shares; treat long call delta * 100 as synthetic share exposure.",
+            "Tenor: Long leg 6–14 months; short leg **21–60 DTE** for consistent roll cadence.",
+            "Roll Rules: Roll short call when Δ > 0.40 or ≥70% premium captured; keep same LEAPS unless Δ < 0.60 or >0.90 (adjust).",
+            "Liquidity: **Both expirations** must have healthy OI and tight spreads (<15% of mid).",
+            "Risk: Vega decay & IV crush on long leg; avoid low-IV underlying unless directional thesis strong.",
+            "Earnings: Prefer skipping cycles containing earnings unless IV edge justified; earnings can distort short call extrinsic.",
+            "Exit: Full unwind when short call yields diminishing credits (theta collapse) OR thesis invalidated.",
+        ]
+    if strategy == "SYNTHETIC_COLLAR":
+        return [
+            "Structure: **Long deep ITM call (Δ ~0.75–0.85)** + **Long protective put (Δ ~−0.10 to −0.20)** + **Short OTM call (Δ ~0.20–0.35)**.",
+            "Goal: Replicate stock + collar with defined downside and capped upside using options only (capital efficient).",
+            "Tenor: Long call 6–14 months; short call & put **21–60 DTE**; roll short call & protective put together when decay/Δ triggers met.",
+            "Floor/Cap: Floor ≈ put strike − net debit; Cap ≈ short call strike (monitor price approach).",
+            "Liquidity: Need healthy OI/spreads on all three legs; put leg often illiquid—skip thin expirations.",
+            "Risk: Net debit at risk less than 100 shares; vega exposure from long call & put; manage if IV crush reduces extrinsic value.",
+            "Earnings: Protective put helps gap risk; still evaluate pricing distortions—avoid entering just before earnings spike.",
+            "Exit: Unwind if long call delta <0.55 OR put delta shrinks (floor erodes) OR short call offers poor credits after multiple rolls.",
+        ]
 
 
 # --- Earnings Calendar Display ---
@@ -3403,10 +3898,36 @@ def _get_selected_row():
 # st.divider()
 
 tabs = st.tabs([
-    "Cash‑Secured Puts", "Covered Calls", "Collars", "Iron Condor",
-    "Bull Put Spread", "Bear Call Spread",
-    "Compare", "Risk (Monte Carlo)", "Playbook",
-    "Plan & Runbook", "Stress Test", "Overview", "Roll Analysis"
+    # 0
+    "Cash‑Secured Puts",
+    # 1
+    "Covered Calls",
+    # 2
+    "PMCC",
+    # 3
+    "Synthetic Collar",
+    # 4
+    "Collars",
+    # 5
+    "Iron Condor",
+    # 6
+    "Bull Put Spread",
+    # 7
+    "Bear Call Spread",
+    # 8
+    "Compare",
+    # 9
+    "Risk (Monte Carlo)",
+    # 10
+    "Playbook",
+    # 11
+    "Plan & Runbook",
+    # 12
+    "Stress Test",
+    # 13
+    "Overview",
+    # 14
+    "Roll Analysis"
 ])
 
 # --- Tab 1: CSP ---
@@ -3416,7 +3937,7 @@ with tabs[0]:
         st.info("Run a scan or loosen CSP filters.")
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
-                     "IV", "POEW", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Collateral", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+                     "IV", "POEW", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Collateral", "RiskType", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_csp.columns]
 
         # Show expiration risk warnings if any WARN actions exist
@@ -3458,7 +3979,7 @@ with tabs[1]:
         st.info("Run a scan or loosen CC filters.")
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
-                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "DivYld%", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+                     "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "AssignProb", "RiskType", "DivYld%", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_cc.columns]
 
         # Show expiration risk warnings
@@ -3495,15 +4016,59 @@ with tabs[1]:
             "Data source: Yahoo Finance (Alpha Vantage fallback enabled only during order preview to preserve API quota)"
         )
 
-# --- Tab 3: Collars ---
+# --- Tab 3: PMCC ---
 with tabs[2]:
+    st.header("PMCC (Poor Man's Covered Call)")
+    df_pmcc = _add_adj_roi_column(st.session_state.get("df_pmcc", pd.DataFrame()))
+    if df_pmcc.empty:
+        st.info("Run a scan to populate PMCC candidates (runs after primary scan).")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "LongStrike", "ShortStrike", "NetDebit", "ROI%_ann", "ROI%_ann_adj", "LongΔ", "ShortΔ", "AssignProb", "RiskType", "Spread%", "MC_ROI_ann%", "MC_ExpectedPnL", "Score"]
+        show_cols = [c for c in show_cols if c in df_pmcc.columns]
+        st.dataframe(df_pmcc[show_cols], width='stretch', height=520)
+        st.caption("PMCC: Long deep ITM LEAPS call (~Δ 0.8) + Short near-term call (Δ 0.20–0.35). Capital efficiency vs owning 100 shares.")
+        # Warnings
+        try:
+            warn_leaps = df_pmcc[(pd.to_numeric(df_pmcc.get("LongDays", 9999), errors='coerce') < 120)]
+            if not warn_leaps.empty:
+                st.warning(f"⚠️ {len(warn_leaps)} setup(s) have long LEAPS leg < 120 days — roll risk and theta acceleration.")
+            warn_hot_delta = df_pmcc[(pd.to_numeric(df_pmcc.get("ShortΔ", 0), errors='coerce') > 0.40)]
+            if not warn_hot_delta.empty:
+                st.warning(f"⚠️ {len(warn_hot_delta)} setup(s) have short call Δ > 0.40 — elevated assignment risk.")
+        except Exception:
+            pass
+
+# --- Tab 4: Synthetic Collar ---
+with tabs[3]:
+    st.header("Synthetic Collar (Options Only)")
+    df_synthetic_collar = _add_adj_roi_column(st.session_state.get("df_synthetic_collar", pd.DataFrame()))
+    if df_synthetic_collar.empty:
+        st.info("Run a scan to populate Synthetic Collar candidates.")
+    else:
+        show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "LongStrike", "PutStrike", "ShortStrike", "NetDebit", "ROI%_ann", "ROI%_ann_adj", "LongΔ", "PutΔ", "ShortΔ", "AssignProb", "RiskType", "Spread%", "MC_ROI_ann%", "MC_ExpectedPnL", "Score"]
+        show_cols = [c for c in show_cols if c in df_synthetic_collar.columns]
+        st.dataframe(df_synthetic_collar[show_cols], width='stretch', height=520)
+        st.caption("Synthetic Collar: Long deep ITM call + Long protective put + Short OTM call. Simulates stock + collar with options only.")
+        # Warnings
+        try:
+            warn_leaps = df_synthetic_collar[(pd.to_numeric(df_synthetic_collar.get("LongDays", 9999), errors='coerce') < 120)]
+            if not warn_leaps.empty:
+                st.warning(f"⚠️ {len(warn_leaps)} setup(s) have long call leg < 120 days — roll risk and theta acceleration.")
+            warn_hot_delta = df_synthetic_collar[(pd.to_numeric(df_synthetic_collar.get("ShortΔ", 0), errors='coerce') > 0.40)]
+            if not warn_hot_delta.empty:
+                st.warning(f"⚠️ {len(warn_hot_delta)} setup(s) have short call Δ > 0.40 — elevated assignment risk.")
+        except Exception:
+            pass
+
+# --- Tab 5: Collars ---
+with tabs[4]:
     st.header("Collars (Stock + Short Call + Long Put)")
     if df_collar.empty:
         st.info("Run a scan or loosen Collar settings.")
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
                      "CallStrike", "CallPrem", "PutStrike", "PutPrem", "NetCredit",
-                     "ROI%_ann", "CallΔ", "PutΔ", "CallSpread%", "PutSpread%", "CallOI", "PutOI",
+                     "ROI%_ann", "CallΔ", "PutΔ", "AssignProb", "RiskType", "CallSpread%", "PutSpread%", "CallOI", "PutOI",
                      "Floor$/sh", "Cap$/sh", "PutCushionσ", "CallCushionσ", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_collar.columns]
         
@@ -3525,8 +4090,8 @@ with tabs[2]:
         st.dataframe(df_collar[show_cols],
                      width='stretch', height=520)
 
-# --- Tab 3: Iron Condor ---
-with tabs[3]:
+# --- Tab 6: Iron Condor ---
+with tabs[5]:
     st.header("Iron Condor (Sell Put Spread + Sell Call Spread)")
     if df_iron_condor.empty:
         st.info("Run a scan or loosen Iron Condor settings.")
@@ -3534,7 +4099,7 @@ with tabs[3]:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days",
                      "PutShortStrike", "PutLongStrike", "PutSpreadCredit", "PutShortΔ",
                      "CallShortStrike", "CallLongStrike", "CallSpreadCredit", "CallShortΔ",
-                     "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills",
+                     "NetCredit", "MaxLoss", "Capital", "ROI%_ann", "ROI%_excess_bills", "RiskType",
                      "BreakevenLower", "BreakevenUpper", "Range",
                      "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
                      "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "ExpType", "ExpRisk", "Score"]
@@ -3569,8 +4134,8 @@ with tabs[3]:
             "**ProbMaxProfit**: Probability both spreads expire worthless (approximate)"
         )
 
-# --- Tab 4: Bull Put Spread ---
-with tabs[4]:
+# --- Tab 7: Bull Put Spread ---
+with tabs[6]:
     st.header("Bull Put Spread (Defined Risk Credit Spread)")
     if df_bull_put_spread.empty:
         st.info("Run a scan or loosen Credit Spread settings.")
@@ -3579,7 +4144,7 @@ with tabs[4]:
                      "SellStrike", "BuyStrike", "Spread", "NetCredit", "MaxLoss",
                      "OTM%", "ROI%", "ROI%_ann",
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
-                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
+                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "RiskType",
                      "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_bull_put_spread.columns]
         
@@ -3610,8 +4175,8 @@ with tabs[4]:
             "**5-10x more efficient than CSP** (only risk spread width, not full strike)"
         )
 
-# --- Tab 5: Bear Call Spread ---
-with tabs[5]:
+# --- Tab 8: Bear Call Spread ---
+with tabs[7]:
     st.header("Bear Call Spread (Defined Risk Credit Spread)")
     if df_bear_call_spread.empty:
         st.info("Run a scan or loosen Credit Spread settings.")
@@ -3620,7 +4185,7 @@ with tabs[5]:
                      "SellStrike", "BuyStrike", "Spread", "NetCredit", "MaxLoss",
                      "OTM%", "ROI%", "ROI%_ann",
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
-                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital",
+                     "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "RiskType",
                      "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
         show_cols = [c for c in show_cols if c in df_bear_call_spread.columns]
         
@@ -3652,8 +4217,8 @@ with tabs[5]:
             "**Defined risk, no stock ownership required**"
         )
 
-# --- Tab 6: Compare ---
-with tabs[6]:
+# --- Tab 9: Compare ---
+with tabs[8]:
     st.header("Compare Projected Annualized ROIs (mid-price based)")
     if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty and df_bull_put_spread.empty and df_bear_call_spread.empty:
         st.info("No results yet. Run a scan.")
@@ -3845,6 +4410,13 @@ with tabs[6]:
                     available_strategies.append("Cash-Secured Put")
                 if not df_cc.empty:
                     available_strategies.append("Covered Call")
+                # New strategies
+                df_pmcc = st.session_state.get("df_pmcc", st.session_state.get("df_pmcc", pd.DataFrame()))
+                df_synthetic_collar = st.session_state.get("df_synthetic_collar", pd.DataFrame())
+                if not df_pmcc.empty:
+                    available_strategies.append("PMCC")
+                if not df_synthetic_collar.empty:
+                    available_strategies.append("Synthetic Collar")
                 if not df_collar.empty:
                     available_strategies.append("Collar")
                 if not df_iron_condor.empty:
@@ -3861,6 +4433,8 @@ with tabs[6]:
                     strategy_map = {
                         "Cash-Secured Put": ("CSP", df_csp),
                         "Covered Call": ("CC", df_cc),
+                        "PMCC": ("PMCC", df_pmcc),
+                        "Synthetic Collar": ("SYNTHETIC_COLLAR", df_synthetic_collar),
                         "Collar": ("COLLAR", df_collar),
                         "Iron Condor": ("IRON_CONDOR", df_iron_condor),
                         "Bull Put Spread": ("BULL_PUT_SPREAD", df_bull_put_spread),
@@ -3881,6 +4455,10 @@ with tabs[6]:
                     st.info("💡 **CSP**: Sell put option, collect premium, prepared to buy stock at strike")
                 elif selected_strategy == "CC":
                     st.info("💡 **CC**: Sell call option on owned stock, collect premium, capped upside")
+                elif selected_strategy == "PMCC":
+                    st.info("💡 **PMCC**: Long deep ITM LEAPS call + short near-term call (diagonal); capital-efficient covered-call analog")
+                elif selected_strategy == "SYNTHETIC_COLLAR":
+                    st.info("💡 **Synthetic Collar**: Options-only stock + collar: long ITM call + long put + short call for defined downside")
                 elif selected_strategy == "COLLAR":
                     st.info("💡 **Collar**: Sell call + buy put for downside protection, limited upside")
                 elif selected_strategy == "IRON_CONDOR":
@@ -3920,6 +4498,23 @@ with tabs[6]:
                             " CALL $" + df_display['CallStrike'].astype(str) +
                             " / PUT $" + df_display['PutStrike'].astype(str) +
                             " @ $" + df_display['NetCredit'].round(2).astype(str)
+                        )
+                    elif selected_strategy == "PMCC":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " Long $" + df_display['LongStrike'].astype(str) +
+                            " / Short $" + df_display['ShortStrike'].astype(str) +
+                            " (Net Debit $" + df_display['NetDebit'].round(2).astype(str) + ")"
+                        )
+                    elif selected_strategy == "SYNTHETIC_COLLAR":
+                        df_display['display'] = (
+                            df_display['Ticker'] + " " +
+                            df_display['Exp'] +
+                            " Long $" + df_display['LongStrike'].astype(str) +
+                            " / Put $" + df_display['PutStrike'].astype(str) +
+                            " / Short $" + df_display['ShortStrike'].astype(str) +
+                            " (Net Debit $" + df_display['NetDebit'].round(2).astype(str) + ")"
                         )
                     elif selected_strategy == "IRON_CONDOR":
                         df_display['display'] = (
@@ -3982,6 +4577,14 @@ with tabs[6]:
                             cols_info[1].metric("Strike", f"${selected['Strike']:.2f}")
                             cols_info[2].metric("Premium", f"${selected['Premium']:.2f}")
                             cols_info[3].metric("ROI (ann)", f"{selected['ROI%_ann']:.1f}%")
+                        elif selected_strategy == "PMCC":
+                            cols_info[1].metric("Long / Short", f"${selected['LongStrike']:.2f} / ${selected['ShortStrike']:.2f}")
+                            cols_info[2].metric("Net Debit", f"${selected['NetDebit']:.2f}")
+                            cols_info[3].metric("MC ROI (ann)", f"{selected.get('MC_ROI_ann%', float('nan')):.1f}%")
+                        elif selected_strategy == "SYNTHETIC_COLLAR":
+                            cols_info[1].metric("Long/Put/Short", f"${selected['LongStrike']:.2f} / ${selected['PutStrike']:.2f} / ${selected['ShortStrike']:.2f}")
+                            cols_info[2].metric("Net Debit", f"${selected['NetDebit']:.2f}")
+                            cols_info[3].metric("MC ROI (ann)", f"{selected.get('MC_ROI_ann%', float('nan')):.1f}%")
                         elif selected_strategy == "COLLAR":
                             cols_info[1].metric("Call Strike", f"${selected['CallStrike']:.2f}")
                             cols_info[2].metric("Put Strike", f"${selected['PutStrike']:.2f}")
@@ -4074,7 +4677,7 @@ with tabs[6]:
                             format="%.2f",
                             help="Maximum price you're willing to receive"
                         )
-                    elif selected_strategy in ["COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
+                    if selected_strategy in ["COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
                         limit_price = st.number_input(
                             "Limit Price (Net Credit)",
                             min_value=0.01,
@@ -4082,6 +4685,15 @@ with tabs[6]:
                             step=0.01,
                             format="%.2f",
                             help="Minimum net credit you're willing to receive"
+                        )
+                    elif selected_strategy in ["PMCC", "SYNTHETIC_COLLAR"]:
+                        limit_price = st.number_input(
+                            "Limit Price (Net Debit)",
+                            min_value=0.01,
+                            value=float(selected['NetDebit']),
+                            step=0.01,
+                            format="%.2f",
+                            help="Maximum net debit you will pay for the combo"
                         )
                 
                 # Order preview
@@ -4123,6 +4735,14 @@ with tabs[6]:
                     spread_width = selected['BuyStrike'] - selected['SellStrike']
                     col_b.write(f"**Max Risk:** ${(spread_width - selected['NetCredit']) * 100 * num_contracts:,.2f}")
                     st.write(f"**Max Credit:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "PMCC":
+                    col_a, col_b = st.columns(2)
+                    col_a.write("**Action:** BUY ITM LEAPS CALL + SELL NEAR-TERM CALL (Diagonal)")
+                    col_b.write(f"**Net Debit:** ${limit_price * 100 * num_contracts:,.2f}")
+                elif selected_strategy == "SYNTHETIC_COLLAR":
+                    col_a, col_b = st.columns(2)
+                    col_a.write("**Action:** BUY ITM CALL + BUY PUT + SELL CALL (Options Collar)")
+                    col_b.write(f"**Net Debit:** ${limit_price * 100 * num_contracts:,.2f}")
                 
                 # Earnings Safety Check
                 days_to_earnings = selected.get('DaysToEarnings', None)
@@ -4193,6 +4813,10 @@ with tabs[6]:
                                     elif selected_strategy == "BEAR_CALL_SPREAD":
                                         spread_width = selected['BuyStrike'] - selected['SellStrike']
                                         required = (spread_width - selected['NetCredit']) * 100 * num_contracts
+                                    elif selected_strategy == "PMCC":
+                                        required = float(selected['NetDebit']) * 100 * num_contracts
+                                    elif selected_strategy == "SYNTHETIC_COLLAR":
+                                        required = float(selected['NetDebit']) * 100 * num_contracts
                                     
                                     with st.spinner("Checking account..."):
                                         result = trader.check_buying_power(required)
@@ -4488,6 +5112,29 @@ with tabs[6]:
                                             long_call_strike=float(selected['CallLongStrike']),
                                             quantity=int(num_contracts),
                                             limit_price=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "PMCC":
+                                        order = trader.create_pmcc_order(
+                                            symbol=selected['Ticker'],
+                                            long_expiration=str(selected.get('LongExp', selected['Exp'])),
+                                            long_strike=float(selected['LongStrike']),
+                                            short_expiration=str(selected['Exp']),
+                                            short_strike=float(selected['ShortStrike']),
+                                            quantity=int(num_contracts),
+                                            net_debit_limit=float(limit_price),
+                                            duration=order_duration
+                                        )
+                                    elif selected_strategy == "SYNTHETIC_COLLAR":
+                                        order = trader.create_synthetic_collar_order(
+                                            symbol=selected['Ticker'],
+                                            long_expiration=str(selected.get('LongExp', selected['Exp'])),
+                                            long_call_strike=float(selected['LongStrike']),
+                                            short_expiration=str(selected['Exp']),
+                                            put_strike=float(selected['PutStrike']),
+                                            short_call_strike=float(selected['ShortStrike']),
+                                            quantity=int(num_contracts),
+                                            net_limit_price=float(limit_price),
                                             duration=order_duration
                                         )
                                     elif selected_strategy == "BULL_PUT_SPREAD":
@@ -5783,8 +6430,8 @@ with tabs[6]:
                 else:
                     st.info("No contracts available. Run a scan first.")
 
-# --- Tab 7: Risk (Monte Carlo) ---
-with tabs[7]:
+# --- Tab 10: Risk (Monte Carlo) ---
+with tabs[9]:
     st.header("Risk (Monte Carlo) — Uses the global selection above")
     st.caption(
         "Simulates terminal prices via GBM and computes per-contract P&L and annualized ROI. Educational only.")
@@ -5817,15 +6464,23 @@ with tabs[7]:
     if row is None:
         st.info("Select a strategy/contract above and ensure scans have results.")
     else:
+        # Local validator to prevent NaN/inf flowing into MC
+        def _validate_params(params: dict, required_keys: list[str]) -> tuple[bool, list[str]]:
+            bad = []
+            for k in required_keys:
+                v = params.get(k, None)
+                if not isinstance(v, (int, float)) or not np.isfinite(float(v)):
+                    bad.append(k)
+            return (len(bad) == 0, bad)
         # Price Override Section
         st.divider()
         with st.expander("💰 Price Override (for live execution)", expanded=False):
             st.caption(
                 "Override stock price and/or premium if market has moved since scan")
 
-            original_price = float(row["Price"])
-            original_premium = float(
-                row.get("Premium", row.get("CallPrem", 0.0)))
+            original_price = float(_safe_float(row.get("Price")))
+            original_premium = float(_safe_float(
+                row.get("Premium", row.get("CallPrem", 0.0))))
 
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -5917,7 +6572,37 @@ with tabs[7]:
         execution_price = custom_stock_price if 'custom_stock_price' in locals() else original_price
         execution_premium = custom_premium if 'custom_premium' in locals() else original_premium
 
+        # Hard guard: require a finite, positive stock price for MC
+        if not (isinstance(execution_price, (int, float)) and np.isfinite(execution_price) and execution_price > 0.0):
+            st.warning("Scan price missing/invalid — enter current stock price to run simulation.", icon="⚠️")
+            execution_price = st.number_input(
+                "Current stock price (required)",
+                min_value=0.01,
+                value=0.01,
+                step=0.01,
+                format="%.2f",
+                key="mc_required_stock_price",
+                help="Underlying price is required to simulate terminal prices."
+            )
+
+        # For strategies that use premium directly (CSP/CC), ensure it's finite (allow 0.0)
+        if strat_choice in ("CSP", "CC"):
+            if not (isinstance(execution_premium, (int, float)) and np.isfinite(execution_premium) and execution_premium >= 0.0):
+                st.warning("Option premium missing/invalid — enter current premium to run simulation.", icon="⚠️")
+                execution_premium = st.number_input(
+                    "Current option premium (required for CSP/CC)",
+                    min_value=0.00,
+                    value=0.00,
+                    step=0.01,
+                    format="%.2f",
+                    key="mc_required_premium",
+                    help="Premium is required for CSP/CC to compute P&L."
+                )
+
         # Build MC params per strategy
+        # Final sanity check: if Days is NaN/invalid, force >= 1
+        if not isinstance(days_for_mc, (int, float)) or not np.isfinite(days_for_mc) or int(days_for_mc) <= 0:
+            days_for_mc = 1
         if strat_choice == "CSP":
             iv_raw = float(row.get("IV", float("nan")))
             iv = (iv_raw / 100.0) if (iv_raw ==
@@ -5938,8 +6623,13 @@ with tabs[7]:
                 div_ps_annual=0.0,
                 use_net_collateral=bool(use_net_collateral),
             )
-            mc = mc_pnl("CSP", params, n_paths=int(paths), mu=float(
-                mc_drift), seed=seed, rf=float(t_bill_yield))
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "Kp", "put_premium"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for CSP: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("CSP", params, n_paths=int(paths), mu=float(
+                    mc_drift), seed=seed, rf=float(t_bill_yield))
 
             # CSP-specific breach diagnostics (how often S_T < K?)
             try:
@@ -5979,8 +6669,13 @@ with tabs[7]:
                 call_premium=execution_premium,  # Use overridden premium
                 div_ps_annual=div_ps_annual,
             )
-            mc = mc_pnl("CC", params, n_paths=int(paths),
-                        mu=float(mc_drift), seed=seed)
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "Kc", "call_premium"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for CC: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("CC", params, n_paths=int(paths),
+                            mu=float(mc_drift), seed=seed)
         elif strat_choice == "COLLAR":
             iv = 0.20  # conservative default
             div_ps_annual = float(
@@ -5995,11 +6690,218 @@ with tabs[7]:
                 put_premium=float(row.get("PutPrem", 0.0)),
                 div_ps_annual=div_ps_annual,
             )
-            mc = mc_pnl("COLLAR", params, n_paths=int(
-                paths), mu=float(mc_drift), seed=seed)
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "Kc", "call_premium", "Kp", "put_premium"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for COLLAR: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("COLLAR", params, n_paths=int(
+                    paths), mu=float(mc_drift), seed=seed)
+        elif strat_choice == "PMCC":
+            long_strike = float(_safe_float(row.get("LongStrike")))
+            short_strike = float(_safe_float(row.get("ShortStrike")))
+            long_cost = float(_safe_float(row.get("LongCost")))
+            short_prem = float(_safe_float(row.get("ShortPrem")))
+            long_days = int(_safe_int(row.get("LongDays", row_days)))
+            # Clean/validate leg prices to avoid NaNs
+            bad_fields = []
+            if not (np.isfinite(long_cost) and long_cost >= 0.0):
+                bad_fields.append("Long Cost")
+                long_cost = 0.0
+            if not (np.isfinite(short_prem) and short_prem >= 0.0):
+                bad_fields.append("Short Premium")
+                short_prem = 0.0
+            net_debit = long_cost - short_prem
+            if bad_fields:
+                st.warning(f"Missing/invalid values for: {', '.join(bad_fields)}. Using 0.00 for simulation — review the runbook/scan for correct pricing.", icon="⚠️")
+            # IV context
+            iv_raw = float(_safe_float(row.get("IV", float("nan"))))
+            iv_dec = (iv_raw / 100.0) if (iv_raw == iv_raw and iv_raw > 0.0) else float("nan")
+
+            base_rows = [
+                ("Strategy", "PMCC"),
+                ("Ticker", row.get("Ticker")),
+                ("Price", f"${execution_price:,.2f}"),
+                ("Long Strike (LEAPS)", f"${long_strike:.2f}"),
+                ("Short Strike", f"${short_strike:.2f}"),
+                    ("Exp (short)", row.get("Exp")),
+                    ("Days (short)", f"{row_days}"),
+                ("Long Exp", row.get("LongExp")),
+                ("Long Days", f"{long_days}"),
+                ("Long Cost", f"${long_cost:.2f}"),
+                ("Short Premium", f"${short_prem:.2f}"),
+                ("Net Debit", f"${net_debit:.2f}"),
+                ("IV", f"{iv_raw:.2f}%" if iv_raw == iv_raw and iv_raw > 0 else "n/a"),
+            ]
+            st.subheader("Structure summary")
+            st.table(pd.DataFrame(base_rows, columns=["Field", "Value"]))
+            with st.expander("Debug: Selected row fields", expanded=False):
+                st.json({
+                    "Ticker": row.get("Ticker"),
+                    "Exp": row.get("Exp"),
+                    "LongExp": row.get("LongExp"),
+                    "LongStrike": row.get("LongStrike"),
+                    "PutStrike": row.get("PutStrike"),
+                    "ShortStrike": row.get("ShortStrike"),
+                    "LongCost": row.get("LongCost"),
+                    "PutCost": row.get("PutCost"),
+                    "ShortPrem": row.get("ShortPrem"),
+                    "IV": row.get("IV"),
+                    "LongIV%": row.get("LongIV%"),
+                    "PutIV%": row.get("PutIV%"),
+                })
+
+            with st.expander("Debug: Selected row fields", expanded=False):
+                dbg_fields = {
+                    "Ticker": row.get("Ticker"),
+                    "Exp": row.get("Exp"),
+                    "LongExp": row.get("LongExp"),
+                    "LongStrike": row.get("LongStrike"),
+                    "PutStrike": row.get("PutStrike"),
+                    "ShortStrike": row.get("ShortStrike"),
+                    "LongCost": row.get("LongCost"),
+                    "PutCost": row.get("PutCost"),
+                    "ShortPrem": row.get("ShortPrem"),
+                }
+                st.json(dbg_fields)
+
+            paths = 50000
+            days_for_mc = max(1, row_days)
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0.0) else 0.20
+            _liv = float(_safe_float(row.get("LongIV%")))
+            long_iv = (_liv / 100.0) if (np.isfinite(_liv) and _liv > 0.0) else iv_for_calc
+            
+            params = dict(
+                S0=execution_price,
+                days=days_for_mc,
+                iv=iv_for_calc,
+                long_call_strike=long_strike,
+                long_call_cost=long_cost,
+                long_days_total=long_days,
+                long_iv=long_iv,
+                short_call_strike=short_strike,
+                short_call_premium=short_prem,
+                short_iv=iv_for_calc,
+            )
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "long_call_strike", "long_call_cost", "long_days_total", "long_iv", "short_call_strike", "short_call_premium", "short_iv"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for PMCC: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("PMCC", params, n_paths=int(paths), mu=0.0, seed=None)
+
+        elif strat_choice == "SYNTHETIC_COLLAR":
+            long_strike = float(_safe_float(row.get("LongStrike")))
+            put_strike = float(_safe_float(row.get("PutStrike")))
+            short_strike = float(_safe_float(row.get("ShortStrike")))
+            long_cost = float(_safe_float(row.get("LongCost")))
+            put_cost = float(_safe_float(row.get("PutCost")))
+            short_prem = float(_safe_float(row.get("ShortPrem")))
+            long_days = int(_safe_int(row.get("LongDays", row_days)))
+            # Clean/validate leg prices to avoid NaNs propagating
+            bad_fields = []
+            if not (np.isfinite(long_cost) and long_cost >= 0.0):
+                bad_fields.append("Long Cost")
+                long_cost = 0.0
+            if not (np.isfinite(put_cost) and put_cost >= 0.0):
+                bad_fields.append("Put Cost")
+                put_cost = 0.0
+            if not (np.isfinite(short_prem) and short_prem >= 0.0):
+                bad_fields.append("Short Premium")
+                short_prem = 0.0
+            net_debit = long_cost + put_cost - short_prem
+            if bad_fields:
+                st.warning(f"Missing/invalid values for: {', '.join(bad_fields)}. Using 0.00 for simulation — review the runbook/scan for correct pricing.", icon="⚠️")
+            # IV context
+            iv_raw = float(_safe_float(row.get("IV", float("nan"))))
+            iv_dec = (iv_raw / 100.0) if (iv_raw == iv_raw and iv_raw > 0.0) else float("nan")
+
+            base_rows = [
+                ("Strategy", "SYNTHETIC_COLLAR"),
+                ("Ticker", row.get("Ticker")),
+                ("Price", f"${execution_price:,.2f}"),
+                ("Long Call Strike", f"${long_strike:.2f}"),
+                ("Put Strike", f"${put_strike:.2f}"),
+                ("Short Call Strike", f"${short_strike:.2f}"),
+                ("Exp (short)", row.get("Exp")),
+                ("Days (short)", f"{row_days}"),
+                ("Long Exp", row.get("LongExp")),
+                ("Long Days", f"{long_days}"),
+                ("Long Cost", f"${long_cost:.2f}"),
+                ("Put Cost", f"${put_cost:.2f}"),
+                ("Short Premium", f"${short_prem:.2f}"),
+                ("Net Debit", f"${net_debit:.2f}"),
+                ("IV", f"{iv_raw:.2f}%" if iv_raw == iv_raw and iv_raw > 0 else "n/a"),
+            ]
+            st.subheader("Structure summary")
+            st.table(pd.DataFrame(base_rows, columns=["Field", "Value"]))
+            with st.expander("Debug: Selected row fields", expanded=False):
+                st.json({
+                    "Ticker": row.get("Ticker"),
+                    "Exp": row.get("Exp"),
+                    "LongExp": row.get("LongExp"),
+                    "LongStrike": row.get("LongStrike"),
+                    "ShortStrike": row.get("ShortStrike"),
+                    "LongCost": row.get("LongCost"),
+                    "ShortPrem": row.get("ShortPrem"),
+                    "IV": row.get("IV"),
+                    "LongIV%": row.get("LongIV%"),
+                })
+
+            paths = 50000
+            days_for_mc = max(1, row_days)
+            iv_for_calc = iv_dec if (iv_dec == iv_dec and iv_dec > 0.0) else 0.20
+            _liv = float(_safe_float(row.get("LongIV%")))
+            long_iv = (_liv / 100.0) if (np.isfinite(_liv) and _liv > 0.0) else iv_for_calc
+            _piv = float(_safe_float(row.get("PutIV%")))
+            put_iv = (_piv / 100.0) if (np.isfinite(_piv) and _piv > 0.0) else iv_for_calc
+            
+            params = dict(
+                S0=execution_price,
+                days=days_for_mc,
+                iv=iv_for_calc,
+                long_call_strike=long_strike,
+                long_call_cost=long_cost,
+                long_days_total=long_days,
+                long_iv=long_iv,
+                put_strike=put_strike,
+                put_cost=put_cost,
+                put_iv=put_iv,
+                short_call_strike=short_strike,
+                short_call_premium=short_prem,
+                short_iv=iv_for_calc,
+            )
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "long_call_strike", "long_call_cost", "long_days_total", "long_iv", "put_strike", "put_cost", "put_iv", "short_call_strike", "short_call_premium", "short_iv"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for SYNTHETIC_COLLAR: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("SYNTHETIC_COLLAR", params, n_paths=int(paths), mu=0.0, seed=None)
+                # Deep debug for MC outputs
+                with st.expander("Debug: MC internals (Synthetic Collar)", expanded=False):
+                    try:
+                        S_T = mc.get("S_T")
+                        pnl_paths = mc.get("pnl_paths")
+                        st.write({
+                            "days": mc.get("days"),
+                            "paths": mc.get("paths"),
+                            "S_T.size": (int(S_T.size) if isinstance(S_T, np.ndarray) else None),
+                            "S_T finite": (int(np.sum(np.isfinite(S_T))) if isinstance(S_T, np.ndarray) else None),
+                            "pnl.size": (int(pnl_paths.size) if isinstance(pnl_paths, np.ndarray) else None),
+                            "pnl finite": (int(np.sum(np.isfinite(pnl_paths))) if isinstance(pnl_paths, np.ndarray) else None),
+                            "collateral": mc.get("collateral"),
+                            "iv_for_calc": iv_for_calc,
+                            "long_iv": long_iv,
+                            "put_iv": put_iv,
+                        })
+                        st.write("Params:", params)
+                    except Exception as _e:
+                        st.write("Debug MC internals failed:", str(_e))
+
         elif strat_choice == "IRON_CONDOR":
             # Extract IV from Iron Condor row
-            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            iv_raw = float(_safe_float(row.get("IV", float("nan"))))
+            iv = (iv_raw / 100.0) if (iv_raw == iv_raw and iv_raw > 0.0) else 0.20  # fallback to 20%
             
             # Build params dict with all required Iron Condor parameters
             params = dict(
@@ -6012,13 +6914,19 @@ with tabs[7]:
                 call_long_strike=float(row["CallLongStrike"]),
                 net_credit=float(row["NetCredit"])
             )
-            mc = mc_pnl("IRON_CONDOR", params, n_paths=int(
-                paths), mu=float(mc_drift), seed=seed)
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "put_short_strike", "put_long_strike", "call_short_strike", "call_long_strike", "net_credit"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for IRON_CONDOR: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("IRON_CONDOR", params, n_paths=int(
+                    paths), mu=float(mc_drift), seed=seed)
         
         elif strat_choice == "BULL_PUT_SPREAD":
             # Bull Put Spread: SELL higher put + BUY lower put = NET CREDIT
             # No stock ownership, so default drift = 0.0
-            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            iv_raw = float(_safe_float(row.get("IV", float("nan"))))
+            iv = (iv_raw / 100.0) if (iv_raw == iv_raw and iv_raw > 0.0) else 0.20  # fallback to 20%
             
             params = dict(
                 S0=execution_price,  # Use overridden price
@@ -6029,13 +6937,19 @@ with tabs[7]:
                 net_credit=float(row["NetCredit"])
             )
             # Use 0% drift for credit spreads (no stock ownership)
-            mc = mc_pnl("BULL_PUT_SPREAD", params, n_paths=int(paths), 
-                       mu=0.0, seed=seed)
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "sell_strike", "buy_strike", "net_credit"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for BULL_PUT_SPREAD: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("BULL_PUT_SPREAD", params, n_paths=int(paths), 
+                           mu=0.0, seed=seed)
         
         elif strat_choice == "BEAR_CALL_SPREAD":
             # Bear Call Spread: SELL lower call + BUY higher call = NET CREDIT
             # No stock ownership, so default drift = 0.0
-            iv = float(row.get("IV", 20.0)) / 100.0  # Convert from percentage to decimal
+            iv_raw = float(_safe_float(row.get("IV", float("nan"))))
+            iv = (iv_raw / 100.0) if (iv_raw == iv_raw and iv_raw > 0.0) else 0.20  # fallback to 20%
             
             params = dict(
                 S0=execution_price,  # Use overridden price
@@ -6046,8 +6960,13 @@ with tabs[7]:
                 net_credit=float(row["NetCredit"])
             )
             # Use 0% drift for credit spreads (no stock ownership)
-            mc = mc_pnl("BEAR_CALL_SPREAD", params, n_paths=int(paths), 
-                       mu=0.0, seed=seed)
+            ok, bad = _validate_params(params, ["S0", "days", "iv", "sell_strike", "buy_strike", "net_credit"]) 
+            if not ok:
+                st.error(f"Missing/invalid inputs for BEAR_CALL_SPREAD: {', '.join(bad)}. Fix values above to run MC.")
+                mc = None
+            else:
+                mc = mc_pnl("BEAR_CALL_SPREAD", params, n_paths=int(paths), 
+                           mu=0.0, seed=seed)
         
         else:
             st.error(f"Unknown strategy: {strat_choice}")
@@ -6074,19 +6993,33 @@ with tabs[7]:
             if strat_choice == "CC" and max_loss_contract is not None:
                 c5.metric("Max theoretical loss", f"${max_loss_contract:,.0f}", help="Approx. P&L if stock → $0: −100×(Price − premium − dividends)")
 
-            pnl = mc["pnl_paths"]
-            bins = np.histogram_bin_edges(pnl, bins="auto")
-            hist, edges = np.histogram(pnl, bins=bins)
-            chart_df = pd.DataFrame(
-                {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
-            base_chart = alt.Chart(chart_df).mark_bar().encode(
-                x=alt.X("pnl:Q", title="P&L per contract (USD)"),
-                y=alt.Y("count:Q", title="Frequency"),
-                tooltip=["pnl", "count"],
-            )
-            st.altair_chart(base_chart, use_container_width=True)
+            pnl = np.asarray(mc.get("pnl_paths", []), dtype=float)
+            pnl = pnl[np.isfinite(pnl)]
+            if pnl.size == 0:
+                st.warning("Simulation returned no finite P&L paths. Check inputs (IV, days, strikes, premiums).", icon="⚠️")
+            else:
+                try:
+                    bins = np.histogram_bin_edges(pnl, bins="auto")
+                    hist, edges = np.histogram(pnl, bins=bins)
+                    chart_df = pd.DataFrame(
+                        {"pnl": (edges[:-1] + edges[1:]) / 2.0, "count": hist})
+                    base_chart = alt.Chart(chart_df).mark_bar().encode(
+                        x=alt.X("pnl:Q", title="P&L per contract (USD)"),
+                        y=alt.Y("count:Q", title="Frequency"),
+                        tooltip=["pnl", "count"],
+                    )
+                    st.altair_chart(base_chart, use_container_width=True)
+                except Exception:
+                    st.warning("Could not render histogram (non-finite bin edges). Showing summary metrics only.", icon="⚠️")
 
-            def pct(x): return f"{x*100:.2f}%"
+            def pct(x):
+                try:
+                    xf = float(x)
+                    if not math.isfinite(xf):
+                        return "n/a"
+                    return f"{xf*100:.2f}%"
+                except Exception:
+                    return "n/a"
             # Compute ROI from displayed P&L values to ensure alignment with scenarios
             _days_for_mc = int(mc.get("days", int(days_for_mc))) if isinstance(mc, dict) else int(days_for_mc)
             _collateral = float(mc.get("collateral", 0.0)) if isinstance(mc, dict) else 0.0
@@ -6117,18 +7050,75 @@ with tabs[7]:
             ]
             st.dataframe(pd.DataFrame(summary_rows), width='stretch')
 
-# --- Tab 8: Playbook ---
-with tabs[8]:
+            # Optional: Validation against deterministic quantile sampling
+            if strat_choice in ("PMCC", "SYNTHETIC_COLLAR"):
+                import traceback
+                try:
+                    from mc_validation import validate_strategy_mc, report_dataframe
+                    st.subheader("MC Validation (Quantile Sampling Cross‑Check)")
+                    colv1, colv2 = st.columns([1,1])
+                    with colv1:
+                        run_val = st.button("Run Validation", key=f"run_val_{strat_choice}")
+                    with colv2:
+                        auto_val = st.checkbox("Auto‑run on selection change", value=True, key=f"auto_val_{strat_choice}")
+
+                    # Build a unique selection id per strategy to detect contract changes
+                    if strat_choice == "PMCC":
+                        sel_id = f"{row.get('Ticker')}|{row.get('Exp')}|L={row.get('LongStrike')}|S={row.get('ShortStrike')}"
+                    else:  # SYNTHETIC_COLLAR
+                        sel_id = f"{row.get('Ticker')}|{row.get('Exp')}|L={row.get('LongStrike')}|P={row.get('PutStrike')}|S={row.get('ShortStrike')}"
+                    ss_key = f"_val_sel_id_{strat_choice}"
+                    prev_sel = st.session_state.get(ss_key)
+                    sel_changed = (prev_sel != sel_id)
+                    st.session_state[ss_key] = sel_id
+
+                    if run_val or (auto_val and sel_changed):
+                        # Use the SAME drift as the MC call for apples-to-apples
+                        # For PMCC and SYNTHETIC_COLLAR in the Risk tab we run with mu=0.0
+                        # Include selection metadata for transparency in the validator
+                        val_params = dict(params)
+                        val_params.update({
+                            "Ticker": row.get("Ticker"),
+                            "Exp": row.get("Exp"),
+                            "LongExp": row.get("LongExp"),
+                        })
+                        val_report = validate_strategy_mc(
+                            strat_choice,
+                            val_params,
+                            mu=0.0,
+                            rf=float(t_bill_yield),
+                            n=min(int(paths), 50000),
+                            seed=seed if isinstance(seed, int) else 1234,
+                        )
+                        st.dataframe(report_dataframe(val_report), width='stretch')
+                        st.subheader("Validated strategy & legs")
+                        st.json(val_report.get("position", {}))
+                        st.subheader("Validation context")
+                        st.json({
+                            "SelectionId": val_report.get("position", {}).get("SelectionId"),
+                            "Collateral": val_report.get("collateral"),
+                            "OverallOK": val_report.get("overall_ok"),
+                            "MC Summary": val_report.get("mc_summary"),
+                            "QMC Summary": val_report.get("qmc_summary"),
+                        })
+                    else:
+                        st.caption("Enable auto‑run or click 'Run Validation' to refresh.")
+                except Exception as e:
+                    st.caption("Validation module unavailable or failed:")
+                    st.code(traceback.format_exc())
+
+# --- Tab 11: Playbook ---
+with tabs[10]:
     st.header("Best‑Practice Playbook")
     st.write("These are practical guardrails you can toggle against in the scanner.")
-    for name in ["CSP", "CC", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
+    for name in ["CSP", "CC", "PMCC", "SYNTHETIC_COLLAR", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
         with st.expander(f"{name} — tips"):
             tips = best_practices(name)
             for t in tips:
                 st.markdown(f"- {t}")
 
-# --- Tab 9: Plan & Runbook ---
-with tabs[9]:
+# --- Tab 12: Plan & Runbook ---
+with tabs[11]:
     st.header("Plan & Runbook — Uses the global selection above")
     st.caption(
         "We’ll check the globally selected contract/structure against best practices and generate order tickets.")
@@ -6145,9 +7135,7 @@ with tabs[9]:
     if row is None:
         st.info("Select a strategy/contract above and ensure scans have results.")
     else:
-        base = {"CSP": df_csp, "CC": df_cc,
-                "COLLAR": df_collar, "IRON_CONDOR": df_iron_condor,
-                "BULL_PUT_SPREAD": df_bull_put_spread, "BEAR_CALL_SPREAD": df_bear_call_spread}[strat_choice_rb]
+        # Selected strategy row context (removed obsolete 'base' mapping)
 
         # Inputs for checks
         thresholds = dict(
@@ -6219,6 +7207,17 @@ with tabs[9]:
         if flags.get("earnings_risk", False):
             warn_msgs.append(
                 "Earnings announcement within cycle — expect elevated volatility and gap risk.")
+        # Additional warnings for PMCC/Synthetic Collar
+        try:
+            if strat_choice_rb in ("PMCC", "SYNTHETIC_COLLAR"):
+                long_days = int(_safe_int(row.get("LongDays", row.get("Days", 9999))))
+                if long_days < 120:
+                    warn_msgs.append("Long leg has <120 DTE — consider choosing a longer LEAPS to reduce roll pressure.")
+                short_delta = float(_safe_float(row.get("ShortΔ", row.get("Δ", float('nan')))))
+                if short_delta == short_delta and short_delta > 0.40:
+                    warn_msgs.append("Short call Δ > 0.40 — high assignment odds; consider rolling up/out.")
+        except Exception:
+            pass
         if flags.get("below_cost_basis", False):
             warn_msgs.append(
                 "CC strike is below cost basis — assignment would lock in a loss. Consider higher strike or waiting.")
@@ -6227,8 +7226,8 @@ with tabs[9]:
             for m in warn_msgs:
                 st.markdown(f"- {m}")
 
-# --- Tab 10: Stress Test ---
-with tabs[10]:
+# --- Tab 13: Stress Test ---
+with tabs[12]:
     st.header("Stress Test — Uses the global selection above")
     st.caption(
         "Apply price and IV shocks, reduce time by a horizon, and see leg-level and total P&L.")
@@ -6301,8 +7300,8 @@ with tabs[10]:
 
 st.caption("This tool is for education only. Options involve risk and are not suitable for all investors.")
 
-# --- Tab 11: Overview ---
-with tabs[11]:
+# --- Tab 14: Overview ---
+with tabs[13]:
     st.header("Quick Overview — Strategy & Risk")
     st.caption(
         "A concise summary for the globally selected contract/structure, with tail‑loss probability.")
@@ -6692,7 +7691,7 @@ with tabs[11]:
             roi_cycle_expected = float("nan")
 
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Expected P&L / contract", f"${mc['pnl_expected']:,.0f}")
+        c1.metric("Expected P&L / contract", f"${mc.get('pnl_expected', float('nan')):,.0f}")
         c2.metric("Annualized ROI (expected)", _pct(
             mc.get("roi_ann_expected", float("nan"))))
         c3.metric("ROI per cycle (expected)", _pct(roi_cycle_expected))
@@ -6720,8 +7719,8 @@ with tabs[11]:
         st.caption(
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
 
-# --- Tab 12: Roll Analysis ---
-with tabs[12]:
+# --- Tab 15: Roll Analysis ---
+with tabs[14]:
     st.header("Roll Analysis — Should I Roll This Position?")
     st.caption(
         "Evaluate whether rolling to a new expiration is better than closing the current position.")
