@@ -37,7 +37,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_csp.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score",
-            "UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Collateral","Capital"
+            "UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Collateral","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         if "Premium" in tmp.columns:
@@ -49,7 +49,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_cc.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score",
-            "UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"
+            "UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         if "Premium" in tmp.columns:
@@ -64,7 +64,7 @@ def build_compare_dataframe(
         tmp["Premium"] = pd.to_numeric(tmp.get("NetDebit", np.nan), errors="coerce") * 100.0
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","LongStrike","ShortStrike","NetDebit","ROI%_ann",
-            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Strike","Premium"
+            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Strike","Premium","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp["Key"] = (
@@ -80,7 +80,7 @@ def build_compare_dataframe(
         tmp["Premium"] = pd.to_numeric(tmp.get("NetDebit", np.nan), errors="coerce") * 100.0
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","LongStrike","PutStrike","ShortStrike","NetDebit",
-            "ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Strike","Premium"
+            "ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Strike","Premium","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp["Key"] = (
@@ -95,7 +95,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_collar.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","CallStrike","PutStrike","NetCredit","ROI%_ann",
-            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"
+            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp = tmp.rename(columns={"CallStrike": "Strike"})
@@ -108,7 +108,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_iron_condor.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","CallShortStrike","PutShortStrike","NetCredit","ROI%_ann",
-            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"
+            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
@@ -120,7 +120,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_bull_put_spread.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann",
-            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"
+            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp = tmp.rename(columns={"SellStrike": "Strike"})
@@ -132,7 +132,7 @@ def build_compare_dataframe(
         tmp = _maybe_apply_unified(df_bear_call_spread.copy())
         cols = [c for c in [
             "Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann",
-            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"
+            "Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital","Kelly%","KellySize"
         ] if c in tmp.columns]
         tmp = tmp[cols]
         tmp = tmp.rename(columns={"SellStrike": "Strike"})
