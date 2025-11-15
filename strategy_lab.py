@@ -2032,6 +2032,25 @@ def evaluate_fit(strategy, row, thresholds, *, risk_free=0.0, div_y=0.0, bill_yi
         else:
             checks.append(("Put floor cushion", "⚠️", "n/a"))
 
+    # Kelly Criterion position sizing check (if enabled and available)
+    kelly_pct = float(_series_get(row, "Kelly%", float("nan")))
+    kelly_size = float(_series_get(row, "KellySize", float("nan")))
+    
+    if kelly_pct == kelly_pct and kelly_size == kelly_size:
+        if kelly_pct >= 2.0:
+            checks.append(("Kelly position size", "✅", 
+                          f"{kelly_pct:.1f}% of capital (${kelly_size:,.0f}) - strong opportunity"))
+        elif kelly_pct >= 1.0:
+            checks.append(("Kelly position size", "⚠️", 
+                          f"{kelly_pct:.1f}% of capital (${kelly_size:,.0f}) - moderate allocation"))
+        elif kelly_pct > 0:
+            checks.append(("Kelly position size", "⚠️", 
+                          f"{kelly_pct:.1f}% of capital (${kelly_size:,.0f}) - small edge"))
+        else:
+            checks.append(("Kelly position size", "❌", 
+                          "0% - negative expectation, avoid trade"))
+    # If Kelly not available (disabled or not calculated), skip the check
+
     df = pd.DataFrame(checks, columns=["Check", "Status", "Notes"])
     return df, flags
 
