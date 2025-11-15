@@ -320,8 +320,8 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
 
         counters["rows"] += len(chain)
         T = D / 365.0
-    mc_counter = {"count": 0}
-    for _, r in chain.iterrows():
+        mc_counter = {"count": 0}
+        for _, r in chain.iterrows():
             K = _get_num_from_row(
                 r, ["strike", "Strike", "k", "K"], float("nan"))
             if not (K == K and K > 0):
@@ -541,6 +541,24 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 )
             except Exception:
                 rr_score = float("nan")
+            
+            # Assignment risk calculation (for short put)
+            assignment_risk = 0.0
+            try:
+                from risk_metrics.assignment_risk import calculate_assignment_risk_score
+                from datetime import datetime
+                exp_date = datetime.strptime(exp, "%Y-%m-%d") if isinstance(exp, str) else None
+                assignment_risk = calculate_assignment_risk_score(
+                    ticker=ticker,
+                    option_type="put",
+                    strike=float(K),
+                    spot_price=S,
+                    option_price=prem,
+                    days_to_expiration=D,
+                    expiration_date=exp_date
+                )
+            except Exception as e:
+                logging.debug(f"Assignment risk calculation failed for {ticker}: {e}")
 
             rows.append({
                 "Strategy": "CSP",
@@ -570,6 +588,9 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if 'mc_roi_ann' in locals() and mc_roi_ann == mc_roi_ann else float("nan"),
                 "MC_PnL_p5": round(mc_pnl_p5, 2) if 'mc_pnl_p5' in locals() and mc_pnl_p5 == mc_pnl_p5 else float("nan"),
                 "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if 'mc_roi_p5' in locals() and mc_roi_p5 == mc_roi_p5 else float("nan"),
+                
+                # Assignment risk
+                "AssignmentRisk": round(assignment_risk, 3) if assignment_risk == assignment_risk else 0.0,
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
@@ -653,8 +674,8 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
         counters["rows"] += len(chain)
 
         T = D / 365.0
-    mc_counter = {"count": 0}
-    for _, r in chain.iterrows():
+        mc_counter = {"count": 0}
+        for _, r in chain.iterrows():
             K = _get_num_from_row(
                 r, ["strike", "Strike", "k", "K"], float("nan"))
             if not (K == K and K > 0):
@@ -882,6 +903,24 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 open_interest=oi,
                 bid_ask_spread_pct=spread_pct or 0.0
             )
+            
+            # Assignment risk calculation (for short call - dividend capture risk)
+            assignment_risk = 0.0
+            try:
+                from risk_metrics.assignment_risk import calculate_assignment_risk_score
+                from datetime import datetime
+                exp_date = datetime.strptime(exp, "%Y-%m-%d") if isinstance(exp, str) else None
+                assignment_risk = calculate_assignment_risk_score(
+                    ticker=ticker,
+                    option_type="call",
+                    strike=float(K),
+                    spot_price=S,
+                    option_price=prem,
+                    days_to_expiration=D,
+                    expiration_date=exp_date
+                )
+            except Exception as e:
+                logging.debug(f"Assignment risk calculation failed for {ticker}: {e}")
 
             rows.append({
                 "Strategy": "CC",
@@ -907,6 +946,9 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
                 "MC_ROI_ann%": round(mc_roi_ann * 100.0, 2) if mc_roi_ann == mc_roi_ann else float("nan"),
                 "MC_PnL_p5": round(mc_pnl_p5, 2) if mc_pnl_p5 == mc_pnl_p5 else float("nan"),
                 "MC_ROI_ann_p5%": round(mc_roi_p5 * 100.0, 2) if mc_roi_p5 == mc_roi_p5 else float("nan"),
+                
+                # Assignment risk
+                "AssignmentRisk": round(assignment_risk, 3) if assignment_risk == assignment_risk else 0.0,
                 
                 # Expiration risk assessment
                 "ExpType": exp_risk["expiration_type"],
@@ -2574,7 +2616,7 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
                 "POEW": round(poew, 3) if poew == poew else float("nan"),
                 "CushionSigma": round(cushion_sigma, 2) if cushion_sigma == cushion_sigma else float("nan"),
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
-                "Spread%": round(ps["spread%"], 2) if ps["spread%"] is not None else float("nan"),
+                "Spread%": round(ps["spread%"], 2) if (ps["spread%"] is not None and ps["spread%"] == ps["spread%"]) else float("nan"),
                 "OI": ps["oi"],
                 "Volume": ps["volume"],
                 "Capital": int(capital_at_risk),
@@ -2976,7 +3018,7 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
                 "POEW": round(poew, 3) if poew == poew else float("nan"),
                 "CushionSigma": round(cushion_sigma, 2) if cushion_sigma == cushion_sigma else float("nan"),
                 "Theta/Gamma": round(theta_gamma_ratio, 2) if theta_gamma_ratio == theta_gamma_ratio else float("nan"),
-                "Spread%": round(cs["spread%"], 2) if cs["spread%"] is not None else float("nan"),
+                "Spread%": round(cs["spread%"], 2) if (cs["spread%"] is not None and cs["spread%"] == cs["spread%"]) else float("nan"),
                 "OI": cs["oi"],
                 "Volume": cs["volume"],
                 "Capital": int(capital_at_risk),
