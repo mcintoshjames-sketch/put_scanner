@@ -45,6 +45,7 @@ from options_math import (
     compute_spread_pct,
     trailing_dividend_info,
     get_earnings_date,
+    get_earnings_date_cached,
     mc_pnl,
     _bs_d1_d2,
     _norm_cdf
@@ -274,7 +275,7 @@ def analyze_csp(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, 
 
     expirations = fetch_expirations(ticker)
 
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     # dividend yield for q
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
     q = div_y  # continuous dividend yield proxy
@@ -609,7 +610,7 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
     except Exception:
         return pd.DataFrame()
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     # Performance configuration (was previously missing causing MC to be skipped in tests)
     perf_cfg = _get_scan_perf_config()
 
@@ -993,7 +994,7 @@ def analyze_pmcc(ticker, *, target_long_delta=0.80, long_min_days=180, long_max_
     except Exception:
         return pd.DataFrame()
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
 
     # Select LEAPS expiration
@@ -1221,7 +1222,7 @@ def analyze_synthetic_collar(ticker, *, target_long_delta=0.80, put_delta_target
     except Exception:
         return pd.DataFrame()
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     # Performance configuration for conditional MC
     perf_cfg = _get_scan_perf_config()
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
@@ -1479,7 +1480,7 @@ def analyze_collar(ticker, *, min_days=0, days_limit, min_oi, max_spread,
         return pd.DataFrame()
 
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
     rows = []
     # Performance configuration (previously missing)
@@ -1802,7 +1803,7 @@ def analyze_iron_condor(ticker, *, min_days=1, days_limit, min_oi, max_spread,
         return pd.DataFrame()
 
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
     
     rows = []
@@ -2227,7 +2228,7 @@ def analyze_bull_put_spread(ticker, *, min_days=1, days_limit, min_oi, max_sprea
         return pd.DataFrame()
 
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
     
     rows = []
@@ -2632,7 +2633,7 @@ def analyze_bear_call_spread(ticker, *, min_days=1, days_limit, min_oi, max_spre
         return pd.DataFrame()
 
     expirations = fetch_expirations(ticker)
-    earn_date = get_earnings_date(stock)
+    earn_date = get_earnings_date_cached(ticker)
     div_ps_annual, div_y = trailing_dividend_info(stock, S)
     
     rows = []

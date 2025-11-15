@@ -16,6 +16,8 @@ import math
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from functools import lru_cache
+from datetime import datetime
 
 
 # ----------------------------- Helper Functions -----------------------------
@@ -318,10 +320,33 @@ def trailing_dividend_info(ticker_obj, S):
         return 0.0, 0.0
 
 
+@lru_cache(maxsize=512)
+def get_earnings_date_cached(ticker_symbol: str, use_alpha_vantage: bool = False):
+    """
+    Cached wrapper for earnings date lookup. Uses ticker symbol string for caching.
+    This eliminates duplicate lookups when multiple strategies scan the same ticker.
+    
+    Cache is valid for the duration of the Python process (typically one Streamlit session).
+    For overnight runs, restart the app to refresh earnings data.
+    
+    Args:
+        ticker_symbol: Stock ticker symbol (string)
+        use_alpha_vantage: If True, fall back to Alpha Vantage when Yahoo fails.
+    
+    Returns:
+        Earnings date or None if unavailable.
+    """
+    stock = yf.Ticker(ticker_symbol)
+    return get_earnings_date(stock, use_alpha_vantage=use_alpha_vantage)
+
+
 def get_earnings_date(stock: yf.Ticker, use_alpha_vantage=False):
     """
     Try multiple methods to get earnings date from yfinance.
     Optionally falls back to Alpha Vantage if Yahoo Finance has no data.
+    
+    NOTE: Use get_earnings_date_cached() instead for better performance when
+    scanning multiple strategies on the same ticker.
     
     Args:
         stock: yfinance Ticker object
