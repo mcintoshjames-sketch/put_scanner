@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import threading
 import json
+import time
 
 # Import provider system
 try:
@@ -30,6 +31,11 @@ except Exception:
     PROVIDER_SYSTEM_AVAILABLE = False
     get_provider = None
     PROVIDER = "yfinance"
+
+try:
+    from providers import schwab_auth as schwab_auth_utils
+except Exception:  # pragma: no cover - optional helper import
+    schwab_auth_utils = None
 
 # Third-party libs used throughout
 import streamlit as st
@@ -148,6 +154,34 @@ _last_provider_used = {
 }
 
 
+def _init_data_calls() -> None:
+    """Initialize diagnostics structures in session_state if missing."""
+    if "data_calls" not in st.session_state:
+        st.session_state["data_calls"] = {
+            "price": {"polygon": 0, "yahoo": 0},
+            "expirations": {"polygon": 0, "yahoo": 0},
+            "chain": {"polygon": 0, "yahoo": 0},
+        }
+    if "last_provider" not in st.session_state:
+        st.session_state["last_provider"] = {
+            "price": None,
+            "expirations": None,
+            "chain": None,
+        }
+    if "last_attempt" not in st.session_state:
+        st.session_state["last_attempt"] = {
+            "price": None,
+            "expirations": None,
+            "chain": None,
+        }
+    if "data_errors" not in st.session_state:
+        st.session_state["data_errors"] = {
+            "price": {"polygon": None, "yahoo": None},
+            "expirations": {"polygon": None, "yahoo": None},
+            "chain": {"polygon": None, "yahoo": None},
+        }
+
+
 # ----------------------------- Utils -----------------------------
 
 # Initialize the options provider
@@ -169,58 +203,125 @@ try:
 except Exception:  # pragma: no cover - optional
     POLY = None
     USE_POLYGON = False
-    # Try to initialize Polygon client directly if running standalone
-    if not USE_PROVIDER_SYSTEM:
+
+
+def _schwab_context_config() -> dict:
+    """Return Schwab-related configuration from environment.
+
+    This is used by the UI helpers when the provider system or
+    schwab_auth_utils are available.
+    """
+    return {
+        "api_key": os.environ.get("SCHWAB_API_KEY"),
+        "app_secret": os.environ.get("SCHWAB_APP_SECRET"),
+        "callback_url": os.environ.get("SCHWAB_CALLBACK_URL", "https://127.0.0.1"),
+        "token_path": os.environ.get("SCHWAB_TOKEN_PATH", "./schwab_token.json"),
+    }
+
+
+def _schwab_token_info_safe() -> dict:
+    """Safely get Schwab token info, falling back to helpers.
+
+    Always includes a "token_path" key in the returned dict.
+    """
+    ctx = _schwab_context_config()
+    token_path = ctx["token_path"]
+    if PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, "get_token_info"):
         try:
-            from providers.polygon import PolygonClient
+            info = PROVIDER_INSTANCE.get_token_info()
+            info.setdefault("token_path", token_path)
+            return info
+        except Exception as exc:
+            return {"exists": False, "error": str(exc), "token_path": token_path}
+    if not schwab_auth_utils:
+        return {"exists": False, "error": "Schwab token helpers unavailable", "token_path": token_path}
+    info = schwab_auth_utils.token_status(token_path)
+    info.setdefault("token_path", token_path)
+    return info
 
-            # Try Streamlit secrets first, then fall back to environment variable
-            polygon_key = ""
-            if hasattr(st, "secrets") and "POLYGON_API_KEY" in st.secrets:
-                polygon_key = st.secrets["POLYGON_API_KEY"]
-            else:
-                polygon_key = os.getenv("POLYGON_API_KEY", "")
 
-            if polygon_key:
-                POLY = PolygonClient(api_key=polygon_key)
-                USE_POLYGON = True
+def _schwab_refresh_token_safe() -> dict:
+    """Safely attempt a Schwab token refresh.
+
+    Uses the provider instance if available; otherwise falls back to
+    schwab_auth_utils.refresh_token_file.
+    """
+    ctx = _schwab_context_config()
+    if PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, "refresh_token"):
+        try:
+            return PROVIDER_INSTANCE.refresh_token()
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+    if not schwab_auth_utils:
+        return {
+            "success": False,
+            "message": "Schwab token helpers unavailable",
+        }
+    api_key = ctx["api_key"]
+    app_secret = ctx["app_secret"]
+    if not api_key or not app_secret:
+        return {
+            "success": False,
+            "message": "Set SCHWAB_API_KEY and SCHWAB_APP_SECRET before refreshing.",
+        }
+    return schwab_auth_utils.refresh_token_file(api_key, app_secret, ctx["token_path"])
+
+
+def _schwab_build_auth_url(callback_url: str | None = None) -> str | None:
+    """Build an authorization URL for Schwab manual OAuth."""
+    ctx = _schwab_context_config()
+    auth_callback = callback_url or ctx["callback_url"]
+    api_key = ctx["api_key"]
+    if not api_key:
+        return None
+    if PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, "build_authorization_url"):
+        try:
+            return PROVIDER_INSTANCE.build_authorization_url(auth_callback)
         except Exception:
-            pass  # Stay with Yahoo-only fallback
+            pass
+    if schwab_auth_utils:
+        return schwab_auth_utils.build_authorization_url(api_key, auth_callback)
+    return None
 
-# Diagnostics: Track which provider was used for each fetch_* call
+
+def _schwab_manual_oauth(redirect_url: str, callback_url: str | None = None) -> dict:
+    ctx = _schwab_context_config()
+    use_callback = callback_url or ctx["callback_url"]
+    if PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, "complete_manual_oauth"):
+        try:
+            return PROVIDER_INSTANCE.complete_manual_oauth(redirect_url, use_callback)
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+    if not schwab_auth_utils:
+        return {"success": False, "message": "Schwab token helpers unavailable"}
+    api_key = ctx["api_key"]
+    app_secret = ctx["app_secret"]
+    if not api_key or not app_secret:
+        return {"success": False, "message": "Missing SCHWAB_API_KEY or SCHWAB_APP_SECRET"}
+    try:
+        result = schwab_auth_utils.complete_manual_oauth(
+            api_key,
+            app_secret,
+            use_callback,
+            ctx["token_path"],
+            redirect_url,
+        )
+        result.setdefault("success", True)
+        return result
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
 
 
-def _init_data_calls():
-    """Initialize session state from thread-safe counters."""
-    # Sync thread-safe counters to session state for display
-    with _diagnostics_lock:
-        if "data_calls" not in st.session_state:
-            st.session_state["data_calls"] = {
-                "price": dict(_diagnostics_counters["price"]),
-                "expirations": dict(_diagnostics_counters["expirations"]),
-                "chain": dict(_diagnostics_counters["chain"]),
-            }
-        else:
-            # Update session state with current thread-safe counter values
-            for call_type in ["price", "expirations", "chain"]:
-                for provider in ["yfinance", "schwab", "polygon"]:
-                    st.session_state["data_calls"][call_type][provider] = _diagnostics_counters[call_type][provider]
-        
-        if "last_provider" not in st.session_state:
-            st.session_state["last_provider"] = dict(_last_provider_used)
-        else:
-            st.session_state["last_provider"].update(_last_provider_used)
-    
-    if "last_attempt" not in st.session_state:
-        st.session_state["last_attempt"] = {
-            "price": None, "expirations": None, "chain": None
-        }
-    if "data_errors" not in st.session_state:
-        st.session_state["data_errors"] = {
-            "price": {"yfinance": None, "schwab": None, "polygon": None},
-            "expirations": {"yfinance": None, "schwab": None, "polygon": None},
-            "chain": {"yfinance": None, "schwab": None, "polygon": None},
-        }
+def _schwab_reset_token_file() -> dict:
+    ctx = _schwab_context_config()
+    if PROVIDER_INSTANCE and hasattr(PROVIDER_INSTANCE, "reset_token_file"):
+        try:
+            return PROVIDER_INSTANCE.reset_token_file()
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
+    if not schwab_auth_utils:
+        return {"success": False, "message": "Schwab token helpers unavailable"}
+    return schwab_auth_utils.reset_token_file(ctx["token_path"])
 
 
 def _record_data_source(name: str, provider: str) -> None:
@@ -860,6 +961,26 @@ This combination is too risky and has been blocked:
         """)
     else:
         st.success(f"✅ {risk_info['expiration_type']} - Standard expiration with acceptable risk")
+
+
+def _record_scan_start() -> None:
+    """Record the start time of the most recent scan in session state."""
+    try:
+        _ss_set("last_scan_started_at", time.time())
+    except Exception:
+        pass
+
+
+def _record_scan_end() -> None:
+    """Record the end time and duration of the most recent scan."""
+    try:
+        started = _ss_get("last_scan_started_at")
+        now = time.time()
+        if isinstance(started, (int, float)) and started <= now:
+            _ss_set("last_scan_duration", now - started)
+        _ss_set("last_scan_finished_at", now)
+    except Exception:
+        pass
 
 
 # ----------------------------- Black-Scholes & Greeks -----------------------------
@@ -2608,11 +2729,26 @@ _init_data_calls()
 with st.sidebar:
     st.header("Universe & Filters")
     
+    # Quick token status indicator (when using Schwab)
+    current_provider = PROVIDER if PROVIDER_SYSTEM_AVAILABLE else "yfinance"
+    if current_provider == "schwab":
+        token_info = _schwab_token_info_safe()
+        if token_info.get("exists") and "error" not in token_info:
+            minutes_remaining = token_info.get("minutes_remaining", 0)
+            is_expired = token_info.get("is_expired", False)
+
+            # This reflects the short-lived access token, not the 7-day OAuth window.
+            if is_expired:
+                st.error("🔴 Schwab access token expired (will refresh on next API use if OAuth session is still valid)")
+            elif minutes_remaining is not None and minutes_remaining < 60:
+                st.warning(f"⚠️ Schwab access token: {int(minutes_remaining)} min remaining (auto-refresh via Schwab API)")
+    
     # Data Provider Selection
-    with st.expander("📡 Data Provider", expanded=False):
-        provider_options = ["yfinance", "schwab", "polygon"]
-        current_provider = PROVIDER if PROVIDER_SYSTEM_AVAILABLE else "yfinance"
-        
+    # Expand by default if using Schwab (to show token status)
+    provider_options = ["yfinance", "schwab", "polygon"]
+    is_schwab = current_provider == "schwab"
+    
+    with st.expander("📡 Data Provider", expanded=is_schwab):
         selected_provider = st.selectbox(
             "Select Data Provider",
             options=provider_options,
@@ -2626,15 +2762,117 @@ with st.sidebar:
             os.environ["OPTIONS_PROVIDER"] = selected_provider
             st.info(f"Provider changed to {selected_provider}. Restart app to apply changes.")
         
-        # Show provider status
-        if USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE:
+        # Show provider status / Schwab tools
+        provider_ready = USE_PROVIDER_SYSTEM and PROVIDER_INSTANCE is not None
+        if provider_ready:
             st.success(f"✓ Active: {selected_provider.upper()}")
         else:
-            st.warning(f"⚠ Using fallback: YFinance")
+            st.warning("⚠ Provider not initialized — falling back to YFinance data")
             if selected_provider == "schwab":
-                st.caption("Configure Schwab credentials in environment or secrets")
+                st.caption("Configure SCHWAB_API_KEY / SCHWAB_APP_SECRET and refresh")
             elif selected_provider == "polygon":
-                st.caption("Set POLYGON_API_KEY in environment")
+                st.caption("Set POLYGON_API_KEY before enabling Polygon data")
+
+        if selected_provider == "schwab":
+            st.divider()
+            st.caption("**Schwab Access Token Status** (auto-refreshed by Schwab API)")
+
+            token_info = _schwab_token_info_safe()
+            token_exists = token_info.get("exists")
+            token_error = token_info.get("error")
+            minutes_remaining = token_info.get("minutes_remaining")
+            hours_remaining = token_info.get("hours_remaining")
+            is_expired = bool(token_info.get("is_expired"))
+
+            if token_exists:
+                if token_error:
+                    st.error(f"⚠️ {token_error}")
+                else:
+                    if is_expired:
+                        st.error("🔴 Access token expired")
+                        st.caption(f"Expired: {token_info.get('expires_datetime')}")
+                    elif minutes_remaining is not None and minutes_remaining < 60:
+                        st.warning(f"⚠️ Access token expires in {int(minutes_remaining)} min (auto-refresh via Schwab API)")
+                        st.caption(f"Expiration: {token_info.get('expires_datetime')}")
+                    elif minutes_remaining is not None and hours_remaining is not None:
+                        st.info(f"✓ Access token valid for {hours_remaining:.1f} hours (approx)")
+                        st.caption(f"Expires: {token_info.get('expires_datetime')}")
+            else:
+                st.error("❌ OAuth token file not found")
+                st.caption("Run: python authenticate_schwab.py or use the manual OAuth tool below to start a new 7-day OAuth session.")
+
+            with st.expander("🔐 Manual OAuth / Re-authenticate", expanded=is_expired or not token_exists):
+                st.markdown("""
+                **Use this when the refresh token is expired or the token file is corrupted.**
+
+                1. Click the authorization link below (opens Schwab login)
+                2. Approve access
+                3. Copy the FULL redirect URL from the browser's address bar
+                4. Paste it back here and click **Complete OAuth Re-auth**
+                """)
+
+                ctx = _schwab_context_config()
+                callback_key = "schwab_manual_callback_url"
+                if callback_key not in st.session_state:
+                    st.session_state[callback_key] = ctx["callback_url"]
+                callback_input = st.text_input(
+                    "Redirect / Callback URL",
+                    key=callback_key,
+                    help="Must match the callback URL configured in your Schwab developer app.",
+                )
+
+                auth_url = _schwab_build_auth_url(callback_input)
+                if auth_url:
+                    st.code(auth_url, language="text")
+                    st.link_button("Open Authorization URL", auth_url)
+                else:
+                    st.error("Set SCHWAB_API_KEY (and APP_SECRET) before running OAuth.")
+
+                redirect_key = "schwab_manual_redirect_url"
+                st.text_area(
+                    "Paste the redirect URL after login",
+                    key=redirect_key,
+                    help="Example: https://127.0.0.1/?code=...&session=...",
+                )
+
+                if st.button("Complete OAuth Re-auth", key="complete_schwab_oauth"):
+                    redirect_value = st.session_state.get(redirect_key, "").strip()
+                    if not redirect_value:
+                        st.error("Paste the redirect URL first.")
+                    else:
+                        with st.spinner("Exchanging authorization code..."):
+                            oauth_result = _schwab_manual_oauth(redirect_value, callback_input or ctx["callback_url"])
+                        if oauth_result.get("success"):
+                            st.success("✅ Token updated successfully")
+                            if oauth_result.get("expires_datetime"):
+                                st.caption(f"Expires: {oauth_result['expires_datetime']}")
+                            if oauth_result.get("token_path"):
+                                st.caption(f"Saved to: {oauth_result['token_path']}")
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {oauth_result.get('message', 'OAuth failed')}")
+
+                if st.button("🧹 Reset Token File", key="reset_schwab_token"):
+                    reset_result = _schwab_reset_token_file()
+                    if reset_result.get("success"):
+                        msg = reset_result.get("message", "Token file reset.")
+                        st.info(msg)
+                        if reset_result.get("backup_path"):
+                            st.caption(f"Backup saved to {reset_result['backup_path']}")
+                    else:
+                        st.error(reset_result.get("message", "Unable to reset token file."))
+
+            if not token_exists:
+                with st.expander("📖 How to Authenticate", expanded=True):
+                    st.markdown("""
+                    **Schwab API requires OAuth authentication.**
+
+                    Use the manual OAuth flow above or run in a terminal:
+                    ```bash
+                    python authenticate_schwab.py
+                    ```
+                    """)
 
     # Live Trading Control
     with st.expander("⚡ LIVE TRADING", expanded=False):
@@ -2925,6 +3163,59 @@ with st.sidebar:
                 _ = fetch_chain_uncached(probe_symbol, exp_to_use)
             st.success(
                 "Probes executed. See 'Last provider used' and counters below.")
+
+    # Performance debug section: shows scan timing and provider call counts
+    with st.expander("⚙️ Performance Debug", expanded=False):
+        st.caption("Inspect provider usage and last scan timing.")
+
+        # Basic scan timing
+        started = _ss_get("last_scan_started_at")
+        finished = _ss_get("last_scan_finished_at")
+        duration = _ss_get("last_scan_duration")
+        col_t1, col_t2, col_t3 = st.columns(3)
+        with col_t1:
+            if isinstance(duration, (int, float)):
+                st.metric("Last Scan (sec)", f"{duration:.1f}")
+            else:
+                st.metric("Last Scan (sec)", "-")
+        with col_t2:
+            if isinstance(started, (int, float)):
+                st.metric("Started", datetime.fromtimestamp(started).strftime("%H:%M:%S"))
+            else:
+                st.metric("Started", "-")
+        with col_t3:
+            if isinstance(finished, (int, float)):
+                st.metric("Finished", datetime.fromtimestamp(finished).strftime("%H:%M:%S"))
+            else:
+                st.metric("Finished", "-")
+
+        st.divider()
+        st.caption("Provider call counts (since app start/reset):")
+
+        # Use in-memory diagnostics counters
+        with _diagnostics_lock:
+            counters_snapshot = json.loads(json.dumps(_diagnostics_counters))
+            last_used_snapshot = dict(_last_provider_used)
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.write("**Price Calls**")
+            for prov, cnt in counters_snapshot.get("price", {}).items():
+                st.write(f"- {prov}: {cnt}")
+        with col_p2:
+            st.write("**Expirations Calls**")
+            for prov, cnt in counters_snapshot.get("expirations", {}).items():
+                st.write(f"- {prov}: {cnt}")
+
+        st.write("**Chain Calls**")
+        for prov, cnt in counters_snapshot.get("chain", {}).items():
+            st.write(f"- {prov}: {cnt}")
+
+        st.caption(
+            f"Last provider used → price: {last_used_snapshot.get('price')}, "
+            f"expirations: {last_used_snapshot.get('expirations')}, "
+            f"chain: {last_used_snapshot.get('chain')}"
+        )
     # Always show the latest values after any actions above
         calls = st.session_state["data_calls"]
         lastp = st.session_state["last_provider"]
@@ -3329,6 +3620,7 @@ def run_scans(tickers, params):
 
 # Run scans
 if run_btn:
+    _record_scan_start()
     tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
 
     if not tickers:
@@ -3389,6 +3681,7 @@ if run_btn:
             with st.spinner("Scanning..."):
                 (df_csp, df_cc, df_collar, df_iron_condor, df_bull_put_spread, df_bear_call_spread,
                  df_pmcc, df_synthetic_collar, scan_counters) = run_scans(tickers, opts)
+            _record_scan_end()
 
             st.session_state["df_csp"] = df_csp
             st.session_state["df_cc"] = df_cc
@@ -3453,6 +3746,7 @@ if run_btn:
                             "❌ **No CSP counters available - scan may have failed completely**")
                         st.write("Check if warnings appeared above during scan")
         except Exception as e:
+            _record_scan_end()
             st.error(f"Error during scan: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
@@ -3899,39 +4193,312 @@ def _get_selected_row():
 
 tabs = st.tabs([
     # 0
-    "Cash‑Secured Puts",
+    "📊 Portfolio",
     # 1
-    "Covered Calls",
+    "Cash‑Secured Puts",
     # 2
-    "PMCC",
+    "Covered Calls",
     # 3
-    "Synthetic Collar",
+    "PMCC",
     # 4
-    "Collars",
+    "Synthetic Collar",
     # 5
-    "Iron Condor",
+    "Collars",
     # 6
-    "Bull Put Spread",
+    "Iron Condor",
     # 7
-    "Bear Call Spread",
+    "Bull Put Spread",
     # 8
-    "Compare",
+    "Bear Call Spread",
     # 9
-    "Risk (Monte Carlo)",
+    "Compare",
     # 10
-    "Playbook",
+    "Risk (Monte Carlo)",
     # 11
-    "Plan & Runbook",
+    "Playbook",
     # 12
-    "Stress Test",
+    "Plan & Runbook",
     # 13
-    "Overview",
+    "Stress Test",
     # 14
+    "Overview",
+    # 15
     "Roll Analysis"
 ])
 
-# --- Tab 1: CSP ---
+# --- Tab 0: Portfolio ---
 with tabs[0]:
+    st.header("📊 Portfolio Risk Dashboard")
+    
+    # Import portfolio modules
+    try:
+        from portfolio_manager import get_portfolio_manager
+        from schwab_positions import fetch_schwab_positions, get_mock_positions
+        
+        # Get provider
+        provider = None
+        if PROVIDER_SYSTEM_AVAILABLE and PROVIDER == "schwab":
+            try:
+                provider = get_provider()
+            except Exception as e:
+                st.error(f"Failed to initialize Schwab provider: {e}")
+        
+        # Add refresh button
+        col1, col2, col3 = st.columns([1, 1, 4])
+        with col1:
+            use_mock = st.checkbox("Use Mock Data", value=(provider is None), 
+                                  help="Use mock positions for testing without Schwab API")
+        with col2:
+            if st.button("🔄 Refresh Portfolio", help="Reload positions from Schwab"):
+                _ss_set("portfolio_refresh_trigger", time.time())
+        
+        # Load positions
+        portfolio_mgr = get_portfolio_manager()
+        error_msg = None
+        
+        if use_mock or provider is None:
+            # Use mock data
+            positions = get_mock_positions()
+            portfolio_mgr.load_positions(positions)
+            if not use_mock:
+                st.info("ℹ️ Schwab provider not configured. Showing mock data. Configure Schwab in config.py to see real positions.")
+        else:
+            # Fetch from Schwab
+            with st.spinner("Loading positions from Schwab..."):
+                positions, error_msg = fetch_schwab_positions(provider)
+                portfolio_mgr.load_positions(positions)
+        
+        # Show error if any
+        if error_msg:
+            st.warning(f"⚠️ {error_msg}")
+        
+        # Display portfolio metrics
+        if not positions:
+            st.info("No positions found. Open some positions in your Schwab account to see portfolio risk metrics.")
+        else:
+            # Portfolio summary metrics
+            st.subheader("Portfolio Summary")
+            metrics = portfolio_mgr.get_metrics_summary()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Delta", metrics.get('Total Delta', '0.00'))
+                st.metric("Total Gamma", metrics.get('Total Gamma', '0.00'))
+            with col2:
+                st.metric("Total Vega", metrics.get('Total Vega', '0.00'))
+                st.metric("Total Theta", metrics.get('Total Theta', '0.00'))
+            with col3:
+                st.metric("Net Value", metrics.get('Net Value', '$0'))
+                st.metric("Gross Exposure", metrics.get('Gross Exposure', '$0'))
+            with col4:
+                st.metric("Positions", metrics.get('Positions', '0'))
+                st.metric("Max Position %", metrics.get('Max Position %', '0%'))
+            
+            # Risk alerts
+            alerts = portfolio_mgr.check_risk_alerts()
+            if alerts:
+                st.subheader("⚠️ Risk Alerts")
+                for alert in alerts:
+                    st.warning(alert)
+            
+            st.divider()
+            
+            # Value at Risk (VaR) Section
+            st.subheader("📉 Value at Risk (VaR)")
+            
+            # VaR configuration
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                confidence_level = st.selectbox(
+                    "Confidence Level",
+                    options=[0.90, 0.95, 0.99],
+                    index=1,  # Default to 95%
+                    format_func=lambda x: f"{x*100:.0f}%"
+                )
+            with col2:
+                time_horizon = st.selectbox(
+                    "Time Horizon",
+                    options=[1, 5, 10, 21],
+                    index=0,  # Default to 1 day
+                    format_func=lambda x: f"{x} day{'s' if x > 1 else ''}"
+                )
+            with col3:
+                var_method = st.selectbox(
+                    "Method",
+                    options=['historical', 'parametric'],
+                    index=0,
+                    format_func=lambda x: x.title()
+                )
+            
+            # Fetch historical prices for VaR calculation
+            if st.button("🔢 Calculate VaR", help="Fetch historical data and calculate portfolio VaR"):
+                with st.spinner("Fetching historical prices and calculating VaR..."):
+                    try:
+                        # Get unique symbols from positions
+                        symbols = list(set(pos.symbol for pos in positions))
+                        
+                        # Fetch historical prices (252 trading days ~= 1 year)
+                        import yfinance as yf
+                        from datetime import timedelta
+                        
+                        end_date = datetime.now()
+                        start_date = end_date - timedelta(days=365)
+                        
+                        hist_prices = yf.download(
+                            symbols,
+                            start=start_date,
+                            end=end_date,
+                            progress=False
+                        )['Adj Close']
+                        
+                        if isinstance(hist_prices, pd.Series):
+                            hist_prices = hist_prices.to_frame(name=symbols[0])
+                        
+                        # Calculate VaR
+                        var_result = portfolio_mgr.calculate_var(
+                            historical_prices=hist_prices,
+                            confidence_level=confidence_level,
+                            time_horizon_days=time_horizon,
+                            method=var_method
+                        )
+                        
+                        if var_result:
+                            # Store in session state
+                            _ss_set('var_result', var_result)
+                            st.success("✅ VaR calculated successfully")
+                        else:
+                            st.warning("⚠️ VaR calculation unavailable - check risk_metrics package")
+                            
+                    except Exception as e:
+                        st.error(f"VaR calculation failed: {e}")
+                        import traceback
+                        with st.expander("Show error details"):
+                            st.code(traceback.format_exc())
+            
+            # Display VaR results if available
+            var_result = _ss_get('var_result', None)
+            if var_result:
+                st.markdown("---")
+                
+                # VaR metrics display
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric(
+                        "VaR (Value at Risk)",
+                        f"${var_result.var_amount:,.2f}",
+                        delta=f"{var_result.var_percent:.2f}%",
+                        delta_color="inverse"
+                    )
+                with col2:
+                    st.metric(
+                        "CVaR (Expected Shortfall)",
+                        f"${var_result.cvar_amount:,.2f}" if var_result.cvar_amount else "N/A",
+                        delta=f"{var_result.cvar_percent:.2f}%" if var_result.cvar_percent else "",
+                        delta_color="inverse"
+                    )
+                with col3:
+                    st.metric(
+                        "Portfolio Volatility",
+                        f"{(var_result.volatility or 0) * 100:.2f}%" if var_result.volatility else "N/A",
+                        delta=None
+                    )
+                with col4:
+                    st.metric(
+                        "Data Points",
+                        f"{var_result.data_points or 'N/A'}",
+                        delta=None
+                    )
+                
+                # Interpretation
+                confidence_pct = var_result.confidence_level * 100
+                tail_prob = 100 - confidence_pct
+                
+                st.info(f"""
+                **Interpretation ({var_result.method.title()} Method):**
+                
+                There is a **{tail_prob:.0f}% chance** of losing more than **${var_result.var_amount:,.2f}** 
+                ({var_result.var_percent:.2f}% of portfolio) over the next **{var_result.time_horizon_days} day(s)**.
+                
+                {f"If losses exceed VaR, the expected loss is **${var_result.cvar_amount:,.2f}** ({var_result.cvar_percent:.2f}%)." if var_result.cvar_amount else ""}
+                """)
+                
+                # Distribution statistics if available
+                if var_result.skewness is not None and var_result.kurtosis is not None:
+                    with st.expander("📊 Distribution Statistics"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Skewness:** {var_result.skewness:.3f}")
+                            if var_result.skewness < -0.5:
+                                st.caption("⚠️ Negatively skewed - higher risk of large losses")
+                            elif var_result.skewness > 0.5:
+                                st.caption("✅ Positively skewed - lower risk of large losses")
+                            else:
+                                st.caption("ℹ️ Roughly symmetric distribution")
+                        
+                        with col2:
+                            st.write(f"**Kurtosis:** {var_result.kurtosis:.3f}")
+                            if var_result.kurtosis > 3:
+                                st.caption("⚠️ Fat tails - higher probability of extreme events")
+                            elif var_result.kurtosis < -1:
+                                st.caption("ℹ️ Thin tails - fewer extreme events")
+                            else:
+                                st.caption("✅ Normal tail behavior")
+                
+                # Position contributions if available
+                if var_result.position_contributions:
+                    with st.expander("🎯 Risk Attribution by Position"):
+                        contrib_data = []
+                        total_value = sum(abs(v) for v in var_result.position_contributions.values())
+                        
+                        for symbol, value in sorted(
+                            var_result.position_contributions.items(),
+                            key=lambda x: abs(x[1]),
+                            reverse=True
+                        ):
+                            pct = (abs(value) / total_value * 100) if total_value > 0 else 0
+                            contrib_data.append({
+                                'Symbol': symbol,
+                                'Value': f"${value:,.2f}",
+                                'Weight': f"{pct:.1f}%"
+                            })
+                        
+                        st.dataframe(
+                            pd.DataFrame(contrib_data),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            
+            st.divider()
+            
+            # Greeks by underlying
+            st.subheader("Greeks by Underlying")
+            greeks_df = portfolio_mgr.get_greeks_by_underlying()
+            if not greeks_df.empty:
+                st.dataframe(greeks_df, use_container_width=True, hide_index=True)
+            
+            st.divider()
+            
+            # Detailed positions
+            st.subheader("Position Details")
+            pos_df = portfolio_mgr.get_positions_df()
+            if not pos_df.empty:
+                st.dataframe(pos_df, use_container_width=True, hide_index=True)
+            
+            # Last refresh timestamp
+            if portfolio_mgr.last_refresh:
+                st.caption(f"Last updated: {portfolio_mgr.last_refresh.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        
+    except ImportError as e:
+        st.error(f"Portfolio module not available: {e}")
+        st.info("The portfolio risk dashboard requires portfolio_manager.py and schwab_positions.py")
+    except Exception as e:
+        st.error(f"Error loading portfolio: {e}")
+        import traceback
+        with st.expander("Show error details"):
+            st.code(traceback.format_exc())
+
+# --- Tab 1: CSP ---
+with tabs[1]:
     st.header("Cash‑Secured Puts")
     if df_csp.empty:
         st.info("Run a scan or loosen CSP filters.")
@@ -3973,7 +4540,7 @@ with tabs[0]:
         )
 
 # --- Tab 2: CC ---
-with tabs[1]:
+with tabs[2]:
     st.header("Covered Calls")
     if df_cc.empty:
         st.info("Run a scan or loosen CC filters.")
@@ -4017,7 +4584,7 @@ with tabs[1]:
         )
 
 # --- Tab 3: PMCC ---
-with tabs[2]:
+with tabs[3]:
     st.header("PMCC (Poor Man's Covered Call)")
     df_pmcc = _add_adj_roi_column(st.session_state.get("df_pmcc", pd.DataFrame()))
     if df_pmcc.empty:
@@ -4039,7 +4606,7 @@ with tabs[2]:
             pass
 
 # --- Tab 4: Synthetic Collar ---
-with tabs[3]:
+with tabs[4]:
     st.header("Synthetic Collar (Options Only)")
     df_synthetic_collar = _add_adj_roi_column(st.session_state.get("df_synthetic_collar", pd.DataFrame()))
     if df_synthetic_collar.empty:
@@ -4061,7 +4628,7 @@ with tabs[3]:
             pass
 
 # --- Tab 5: Collars ---
-with tabs[4]:
+with tabs[5]:
     st.header("Collars (Stock + Short Call + Long Put)")
     if df_collar.empty:
         st.info("Run a scan or loosen Collar settings.")
@@ -4091,7 +4658,7 @@ with tabs[4]:
                      width='stretch', height=520)
 
 # --- Tab 6: Iron Condor ---
-with tabs[5]:
+with tabs[6]:
     st.header("Iron Condor (Sell Put Spread + Sell Call Spread)")
     if df_iron_condor.empty:
         st.info("Run a scan or loosen Iron Condor settings.")
@@ -4135,7 +4702,7 @@ with tabs[5]:
         )
 
 # --- Tab 7: Bull Put Spread ---
-with tabs[6]:
+with tabs[7]:
     st.header("Bull Put Spread (Defined Risk Credit Spread)")
     if df_bull_put_spread.empty:
         st.info("Run a scan or loosen Credit Spread settings.")
@@ -4176,7 +4743,7 @@ with tabs[6]:
         )
 
 # --- Tab 8: Bear Call Spread ---
-with tabs[7]:
+with tabs[8]:
     st.header("Bear Call Spread (Defined Risk Credit Spread)")
     if df_bear_call_spread.empty:
         st.info("Run a scan or loosen Credit Spread settings.")
@@ -4218,7 +4785,7 @@ with tabs[7]:
         )
 
 # --- Tab 9: Compare ---
-with tabs[8]:
+with tabs[9]:
     st.header("Compare Strategies — Unified Risk-Adjusted Scores")
     if df_csp.empty and df_cc.empty and df_collar.empty and df_iron_condor.empty and df_bull_put_spread.empty and df_bear_call_spread.empty and st.session_state.get("df_pmcc", pd.DataFrame()).empty and st.session_state.get("df_synthetic_collar", pd.DataFrame()).empty:
         st.info("No results yet. Run a scan.")
@@ -4229,99 +4796,21 @@ with tabs[8]:
         except Exception:
             apply_unified_score = None
 
-        pieces = []
-        if not df_csp.empty:
-            tmp = df_csp.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Collateral","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            pieces.append(tmp)
-        if not df_cc.empty:
-            tmp = df_cc.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","Strike","Premium","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            pieces.append(tmp)
-        # PMCC
+        # Use shared builder to ensure unit normalization consistency
+        from compare_utils import build_compare_dataframe
         df_pmcc = st.session_state.get("df_pmcc", pd.DataFrame())
-        if df_pmcc is not None and not df_pmcc.empty:
-            tmp = df_pmcc.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            # Map to common columns
-            tmp["Strike"] = tmp.get("ShortStrike", np.nan)
-            tmp["Premium"] = tmp.get("ShortPrem", np.nan)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","LongStrike","ShortStrike","NetDebit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp.get("Exp").astype(str) + " | Long=" + tmp.get("LongStrike").astype(str) + " | Short=" + tmp.get("ShortStrike").astype(str)
-            pieces.append(tmp)
-        # Synthetic Collar
         df_synthetic_collar = st.session_state.get("df_synthetic_collar", pd.DataFrame())
-        if df_synthetic_collar is not None and not df_synthetic_collar.empty:
-            tmp = df_synthetic_collar.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp["Strike"] = tmp.get("ShortStrike", np.nan)
-            tmp["Premium"] = tmp.get("NetDebit", np.nan)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","LongStrike","PutStrike","ShortStrike","NetDebit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp.get("Exp").astype(str) + " | Long=" + tmp.get("LongStrike").astype(str) + " | Put=" + tmp.get("PutStrike").astype(str) + " | Short=" + tmp.get("ShortStrike").astype(str)
-            pieces.append(tmp)
-        if not df_collar.empty:
-            tmp = df_collar.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","CallStrike","PutStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp = tmp.rename(columns={"CallStrike": "Strike"})
-            tmp["Premium"] = tmp.get("NetCredit")
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | K=" + tmp["Strike"].astype(str)
-            tmp["Strategy"] = "COLLAR"
-            pieces.append(tmp)
-        if not df_iron_condor.empty:
-            tmp = df_iron_condor.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","CallShortStrike","PutShortStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp = tmp.rename(columns={"CallShortStrike": "Strike"})
-            tmp["Premium"] = tmp.get("NetCredit")
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | CS=" + tmp["Strike"].astype(str) + " | PS=" + tmp["PutShortStrike"].astype(str)
-            pieces.append(tmp)
-        if not df_bull_put_spread.empty:
-            tmp = df_bull_put_spread.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp = tmp.rename(columns={"SellStrike": "Strike"})
-            tmp["Premium"] = tmp.get("NetCredit")
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
-            pieces.append(tmp)
-        if not df_bear_call_spread.empty:
-            tmp = df_bear_call_spread.copy()
-            if apply_unified_score is not None:
-                tmp = apply_unified_score(tmp)
-            tmp_cols = [c for c in ["Strategy","Ticker","Exp","Days","SellStrike","BuyStrike","NetCredit","ROI%_ann","Score","UnifiedScore","MC_ROI_ann%","MC_ExpectedPnL","MC_PnL_p5","Capital"] if c in tmp.columns]
-            tmp = tmp[tmp_cols]
-            tmp = tmp.rename(columns={"SellStrike": "Strike"})
-            tmp["Premium"] = tmp.get("NetCredit")
-            tmp["Key"] = tmp["Ticker"] + " | " + tmp["Exp"] + \
-                " | Sell=" + tmp["Strike"].astype(str) + " | Buy=" + tmp["BuyStrike"].astype(str)
-            pieces.append(tmp)
-
-
-        cmp_df = pd.concat(
-            pieces, ignore_index=True) if pieces else pd.DataFrame()
+        cmp_df = build_compare_dataframe(
+            df_csp=df_csp,
+            df_cc=df_cc,
+            df_pmcc=df_pmcc,
+            df_synthetic_collar=df_synthetic_collar,
+            df_collar=df_collar,
+            df_iron_condor=df_iron_condor,
+            df_bull_put_spread=df_bull_put_spread,
+            df_bear_call_spread=df_bear_call_spread,
+            apply_unified=True,
+        )
         if cmp_df.empty:
             st.info("No comparable rows.")
         else:
@@ -4330,7 +4819,71 @@ with tabs[8]:
                 cmp_df = cmp_df.sort_values(["UnifiedScore"] + sort_cols[1:], ascending=[False] + [False]*(len(sort_cols)-1))
             else:
                 cmp_df = cmp_df.sort_values(sort_cols, ascending=[False]*len(sort_cols))
+            # Transparency: Tail risk & EV penalty indicators next to UnifiedScore
+            def _cap_at_risk_row(row: pd.Series) -> float:
+                for col in ("MaxLoss", "Capital", "Collateral"):
+                    if col in row and pd.notna(row[col]) and float(row[col]) > 0:
+                        return float(row[col])
+                if "Width" in row and pd.notna(row.get("Width")):
+                    try:
+                        return float(row["Width"]) * 100.0
+                    except Exception:
+                        pass
+                if "NetDebit" in row and pd.notna(row.get("NetDebit")):
+                    try:
+                        return float(row["NetDebit"]) * 100.0
+                    except Exception:
+                        pass
+                if "Strike" in row and pd.notna(row.get("Strike")):
+                    try:
+                        return float(row["Strike"]) * 100.0
+                    except Exception:
+                        pass
+                return float("nan")
+
+            # Compute Tail(p5%) and EVPenalty markers
+            try:
+                caps = cmp_df.apply(_cap_at_risk_row, axis=1)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    tail_pct = (cmp_df.get("MC_PnL_p5") / caps) * 100.0
+                cmp_df["Tail(p5%)"] = tail_pct.round(1)
+            except Exception:
+                cmp_df["Tail(p5%)"] = np.nan
+
+            try:
+                ev_pen = cmp_df.get("MC_ExpectedPnL")
+                cmp_df["EVPenalty"] = np.where((ev_pen.notna()) & (ev_pen < 0), "NEG_EV", "")
+            except Exception:
+                cmp_df["EVPenalty"] = ""
+
+            # Reorder key columns so indicators appear beside the score
+            preferred = ["Strategy","Ticker","Exp","Days","UnifiedScore","Tail(p5%)","EVPenalty"]
+            ordered = [c for c in preferred if c in cmp_df.columns] + [c for c in cmp_df.columns if c not in preferred]
+            cmp_df = cmp_df[ordered]
+
             st.dataframe(cmp_df, width='stretch', height=520)
+
+        # Scoring transparency & explanations
+        with st.expander("What goes into UnifiedScore?", expanded=False):
+            st.markdown("""
+            UnifiedScore blends five components to compare very different strategies on one scale:
+            - Expected Return (45%): Annualized expected ROI (Monte Carlo preferred, capped at 150%).
+            - Tail Risk (25%): 5th percentile P&L relative to capital at risk (p5/capital).
+            - Liquidity (15%): Tight spreads and healthy turnover (Volume/OI).
+            - Cushion (10%): Distance in standard deviations to key barrier(s).
+            - Efficiency (5%): Credit or expected P&L relative to capital.
+
+            Negative MC expected P&L triggers a strong penalty; rows marked "NEG_EV" were down‑weighted accordingly.
+            """)
+            with st.expander("Strategy notes", expanded=False):
+                st.write("CSP: Capital = strike×100; cushion uses distance to short put in σ; liquidity uses spread and turnover.")
+                st.write("CC: Capital = shares×price; dividend context considered in analyzer; cushion uses distance to short call.")
+                st.write("COLLAR: Two legs; liquidity and cushion use the worse leg; capital ≈ price×100.")
+                st.write("IRON CONDOR: Defined risk; capital = max loss; cushion = min of both wings; liquidity stricter due to 4 legs.")
+                st.write("Bull Put Spread: Defined risk; capital = max loss; cushion uses short put distance.")
+                st.write("Bear Call Spread: Defined risk; capital = max loss; cushion uses short call distance.")
+                st.write("PMCC: Net debit structure; capital ≈ net debit×100; cushion not emphasized.")
+                st.write("Synthetic Collar: Net debit; floor cushion derived from put leg; capital ≈ net debit×100.")
         
         # Trade Execution Module
         st.divider()
@@ -6484,7 +7037,7 @@ with tabs[8]:
                     st.info("No contracts available. Run a scan first.")
 
 # --- Tab 10: Risk (Monte Carlo) ---
-with tabs[9]:
+with tabs[10]:
     st.header("Risk (Monte Carlo) — Uses the global selection above")
     st.caption(
         "Simulates terminal prices via GBM and computes per-contract P&L and annualized ROI. Educational only.")
@@ -7161,7 +7714,7 @@ with tabs[9]:
                     st.code(traceback.format_exc())
 
 # --- Tab 11: Playbook ---
-with tabs[10]:
+with tabs[11]:
     st.header("Best‑Practice Playbook")
     st.write("These are practical guardrails you can toggle against in the scanner.")
     for name in ["CSP", "CC", "PMCC", "SYNTHETIC_COLLAR", "COLLAR", "IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"]:
@@ -7171,7 +7724,7 @@ with tabs[10]:
                 st.markdown(f"- {t}")
 
 # --- Tab 12: Plan & Runbook ---
-with tabs[11]:
+with tabs[12]:
     st.header("Plan & Runbook — Uses the global selection above")
     st.caption(
         "We’ll check the globally selected contract/structure against best practices and generate order tickets.")
@@ -7280,7 +7833,7 @@ with tabs[11]:
                 st.markdown(f"- {m}")
 
 # --- Tab 13: Stress Test ---
-with tabs[12]:
+with tabs[13]:
     st.header("Stress Test — Uses the global selection above")
     st.caption(
         "Apply price and IV shocks, reduce time by a horizon, and see leg-level and total P&L.")
@@ -7354,7 +7907,7 @@ with tabs[12]:
 st.caption("This tool is for education only. Options involve risk and are not suitable for all investors.")
 
 # --- Tab 14: Overview ---
-with tabs[13]:
+with tabs[14]:
     st.header("Quick Overview — Strategy & Risk")
     st.caption(
         "A concise summary for the globally selected contract/structure, with tail‑loss probability.")
@@ -7773,7 +8326,7 @@ with tabs[13]:
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
 
 # --- Tab 15: Roll Analysis ---
-with tabs[14]:
+with tabs[15]:
     st.header("Roll Analysis — Should I Roll This Position?")
     st.caption(
         "Evaluate whether rolling to a new expiration is better than closing the current position.")

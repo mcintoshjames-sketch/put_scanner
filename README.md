@@ -40,6 +40,38 @@ The app will open in your browser (default http://localhost:8501). Press Ctrl+C 
 - If you see missing package errors, ensure your virtual environment is activated (`source .venv/bin/activate`) and re-run `pip install -r requirements.txt`.
 - yfinance data can be delayed and limited; the tool is for education only.
 
+## Schwab Token Management
+
+### Refreshing the token in the app
+When using Schwab as your data provider, the app will display token status in the sidebar under "📡 Data Provider". You can:
+- View token expiration time
+- See time remaining (hours/minutes)
+- Click "🔄 Refresh Token" button to refresh an expiring token
+
+The token will be automatically refreshed without requiring re-authentication. If the refresh token itself has expired (after 7 days), you'll need to re-authenticate.
+
+### Manual token refresh (command line)
+You can also refresh the token manually from the command line:
+
+```bash
+python force_refresh_token.py
+```
+
+This script will:
+- Check current token expiration
+- Request a new access token using the refresh token
+- Update `schwab_token.json` with new credentials
+- Display new expiration time
+
+### Re-authenticating (when refresh token expires)
+If your refresh token has expired (typically after 7 days), run:
+
+```bash
+python authenticate_schwab.py
+```
+
+This will guide you through the full OAuth flow to generate a new token.
+
 ## Smoke test live trading (no real orders)
 
 You can exercise the full order execution code path without contacting Schwab using the mock transport:

@@ -55,3 +55,42 @@ class SchwabProvider(OptionsProvider):
         """
         import math
         return (float("nan"), float("nan"), float("nan"))
+
+    # Token management methods (delegate to underlying client)
+    def get_token_info(self):
+        """Get token status information from underlying Schwab client."""
+        return self.client.get_token_info()
+
+    def refresh_token(self):
+        """Refresh the Schwab API token."""
+        return self.client.refresh_token()
+
+    def build_authorization_url(self, callback_url: str | None = None) -> str:
+        """Generate the Schwab OAuth authorization URL."""
+        return self.client.build_authorization_url(callback_url)
+
+    def complete_manual_oauth(
+        self,
+        redirect_url: str,
+        callback_url: str | None = None,
+    ):
+        """Exchange a redirect URL for fresh tokens via Schwab OAuth."""
+        return self.client.complete_manual_oauth(
+            redirect_url, callback_url
+        )
+
+    def reset_token_file(self):
+        """Backup and remove the current token file to force re-authentication."""
+        return self.client.reset_token_file()
+
+    def build_authorization_url(self, callback_override: str | None = None) -> str:
+        """Expose OAuth authorization URL builder for UI helpers."""
+        return self.client.build_authorization_url(callback_override)
+
+    def complete_manual_oauth(self, redirect_url: str, callback_override: str | None = None):
+        """Run a manual OAuth exchange from a pasted redirect URL."""
+        return self.client.complete_manual_oauth(redirect_url, callback_override)
+
+    def reset_token_file(self):
+        """Backup/remove the token file so a fresh OAuth run can occur."""
+        return self.client.reset_token_file()

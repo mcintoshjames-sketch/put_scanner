@@ -1,0 +1,3 @@
+client_from_token_file calls: 1
+SPY price: 123.45
+QQQ price: 123.45

@@ -1,0 +1,12 @@
+{
+  "creation_timestamp": 1762895386,
+  "token": {
+    "access_token": "I0.b2F1dGgyLmJkYy5zY2h3YWIuY29t.a20w3PL7heNMVzrCK7Qno0YA7Bh_6kQGVWi_CSHV3E0@",
+    "refresh_token": "OTJml3roxn-JbuT-WnAG6ENoK0HptC674-GYgkZ6JjT5wVbcswfVTcjzDRbyuzxzzyWDJl83UrxlfFKmY0EY_DDnpVfxayGk2OKTw8tyOEGOT5YPRd-_7EAIfkEklQmVxn68ghhf6fY@",
+    "expires_in": 1800,
+    "expires_at": 1762897186,
+    "token_type": "Bearer",
+    "scope": "api",
+    "id_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmZjI0ZDZhODY0YmY5YmE2MWZmOGZmMTUwMjczODg5NmU1YWFhYTdkN2NkNjA0ZTA3Yzg2ODNhZTg1NjIwNTM1IiwiYXVkIjoiNkJmaUJDOFB0SkFFcTlvcmZDelVhT0E5R0tHR01DUmE1Y1J5TnFINlpuWURUSDd0IiwiaXNzIjoidXJuOi8vYXBpLnNjaHdhYmFwaS5jb20iLCJleHAiOjE3NjI4OTg5ODYsImlhdCI6MTc2Mjg5NTM4NiwianRpIjoiMTRiZWRkZTEtOGNlOC00ZWI5LTg0OTQtNWJiY2ExN2QzZWI2In0.VhZlmaoUfRNmsVXZy_UJFP3DYjnvZIWqkzaHsJb3PoQ"
+  }
+}

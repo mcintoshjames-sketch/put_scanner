@@ -4,10 +4,12 @@
 from __future__ import annotations
 import os
 import pandas as pd
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, cast
 from datetime import datetime, date
 import schwab
 from schwab import auth, client
+
+from providers import schwab_auth as schwab_auth_utils
 
 
 class SchwabError(Exception):
@@ -39,20 +41,25 @@ class SchwabClient:
             callback_url: OAuth callback URL (or use SCHWAB_CALLBACK_URL env var)
             token_path: Path to store tokens (default: ./schwab_token.json)
         """
-        self.api_key = api_key or os.environ.get("SCHWAB_API_KEY")
-        self.app_secret = app_secret or os.environ.get("SCHWAB_APP_SECRET")
-        self.callback_url = callback_url or os.environ.get(
+        resolved_api = api_key or os.environ.get("SCHWAB_API_KEY")
+        resolved_secret = app_secret or os.environ.get("SCHWAB_APP_SECRET")
+        resolved_callback = callback_url or os.environ.get(
             "SCHWAB_CALLBACK_URL", "https://127.0.0.1"
         )
-        self.token_path = token_path or os.environ.get(
+        resolved_token_path = token_path or os.environ.get(
             "SCHWAB_TOKEN_PATH", "./schwab_token.json"
         )
 
-        if not self.api_key or not self.app_secret:
+        if not resolved_api or not resolved_secret:
             raise SchwabError(
                 "Missing Schwab credentials. Set SCHWAB_API_KEY and SCHWAB_APP_SECRET "
                 "environment variables or pass them to constructor."
             )
+
+        self.api_key: str = resolved_api
+        self.app_secret: str = resolved_secret
+        self.callback_url: str = resolved_callback
+        self.token_path: str = resolved_token_path
 
         try:
             # Authenticate and create client
@@ -68,7 +75,7 @@ class SchwabClient:
                 import streamlit as st
                 if hasattr(st, 'secrets') and "SCHWAB_TOKEN" in st.secrets:
                     from providers.schwab_streamlit import get_schwab_client_from_streamlit_secrets
-                    return get_schwab_client_from_streamlit_secrets()
+                    return cast(client.Client, get_schwab_client_from_streamlit_secrets())
             except (ImportError, Exception):
                 pass  # Not in Streamlit environment or secrets not configured
             
@@ -82,7 +89,7 @@ class SchwabClient:
                 c = auth.client_from_manual_flow(
                     self.api_key, self.app_secret, self.callback_url, self.token_path
                 )
-            return c
+            return cast(client.Client, c)
         except Exception as e:
             raise SchwabError(f"Authentication failed: {e}")
 
@@ -262,6 +269,11 @@ class SchwabClient:
         elif last and last > 0:
             mark = last
         
+        vol_raw = contract.get("volatility")
+        if vol_raw is None:
+            vol_raw = quote.get("volatility", 0.0)
+        vol_value = _num(vol_raw, 0.0)
+
         return {
             "symbol": symbol,
             "type": contract_type,
@@ -273,9 +285,7 @@ class SchwabClient:
             "lastPrice": float(last) if last else 0.0,
             "openInterest": int(contract.get("openInterest", quote.get("openInterest", 0)) or 0),
             # Schwab returns volatility in percent points; normalize to decimal
-            "impliedVolatility": float(
-                (contract.get("volatility", None) if contract.get("volatility", None) is not None else quote.get("volatility", 0.0))
-            ) / 100.0,
+            "impliedVolatility": float(vol_value) / 100.0,
             "delta": float(contract.get("delta", 0.0)),
             "gamma": float(contract.get("gamma", 0.0)),
             "theta": float(contract.get("theta", 0.0)),
@@ -284,3 +294,47 @@ class SchwabClient:
             "volume": int((contract.get("totalVolume") if contract.get("totalVolume") is not None else quote.get("totalVolume", 0)) or 0),
             "mark": mark,
         }
+
+    # ---------- Token Management Methods ----------
+
+    def get_token_info(self) -> Dict[str, Any]:
+        """Return metadata about the stored Schwab token."""
+        return schwab_auth_utils.token_status(self.token_path)
+
+    def refresh_token(self) -> Dict[str, Any]:
+        """Refresh the access token using the stored refresh token."""
+        return schwab_auth_utils.refresh_token_file(
+            self.api_key, self.app_secret, self.token_path
+        )
+
+    def build_authorization_url(self, callback_override: Optional[str] = None) -> str:
+        """Return the OAuth URL the user should open in the browser."""
+        callback_url = callback_override or self.callback_url
+        return schwab_auth_utils.build_authorization_url(self.api_key, callback_url)
+
+    def complete_manual_oauth(
+        self,
+        redirect_url: str,
+        callback_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Exchange an OAuth redirect URL for new tokens and reload client."""
+        callback_url = callback_override or self.callback_url
+        result = schwab_auth_utils.complete_manual_oauth(
+            self.api_key,
+            self.app_secret,
+            callback_url,
+            self.token_path,
+            redirect_url,
+        )
+        if result.get("success"):
+            # Persist the override if provided so future refreshes use it
+            self.callback_url = callback_url
+            try:
+                self.client = self._get_authenticated_client()
+            except Exception:
+                pass  # Will surface when data methods are called
+        return result
+
+    def reset_token_file(self) -> Dict[str, Any]:
+        """Backup/remove the token file so a fresh OAuth run can occur."""
+        return schwab_auth_utils.reset_token_file(self.token_path)

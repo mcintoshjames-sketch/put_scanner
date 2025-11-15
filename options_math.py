@@ -717,5 +717,70 @@ def mc_pnl(strategy, params, n_paths=20000, mu=0.0, seed=None, rf=0.0):
         "mean_pnl_per_share": float(np.mean(pnl_per_share)) if np.isfinite(np.mean(pnl_per_share)) else float("nan"),
         "mean_roi_ann": float(np.mean(roi_clean)) if roi_clean.size > 0 else float("nan"),
     }
+
+    # --- Theoretical min payoff override for bounded credit strategies ---
+    # In rare cases with low volatility + few MC paths the tail (max loss) might not be sampled,
+    # leading to an unrealistic pnl_min equal to the net credit. Expose true worst-case risk.
+    try:
+        # Only override if distribution shows variance (i.e., we actually sampled some loss paths)
+        pnl_std = out.get("pnl_std")
+        def _should_override(sampled_min, theoretical_min, max_profit=None):
+            if not np.isfinite(theoretical_min):
+                return False
+            if not np.isfinite(sampled_min) or sampled_min > theoretical_min + 1e-9:
+                # If all sampled paths are at max profit (std ~ 0 and sampled_min ≈ max_profit) skip override
+                if max_profit is not None and np.isfinite(max_profit):
+                    if pnl_std is not None and np.isfinite(pnl_std) and pnl_std < 1e-6 and abs(sampled_min - max_profit) < 1e-3:
+                        return False
+                return True
+            return False
+
+        if strategy == "BEAR_CALL_SPREAD":
+            sell_strike = float(params["sell_strike"])
+            buy_strike = float(params["buy_strike"])
+            net_credit = float(params["net_credit"])
+            spread_width = buy_strike - sell_strike
+            theoretical_min = (net_credit - spread_width) * 100.0
+            sampled_min = out.get("pnl_min", float("nan"))
+            max_profit = net_credit * 100.0
+            if _should_override(sampled_min, theoretical_min, max_profit=max_profit):
+                out["pnl_min"] = theoretical_min
+                capital = capital_contract if np.isfinite(capital_contract) and capital_contract > 0 else (spread_width - net_credit) * 100.0
+                if np.isfinite(capital) and capital > 0:
+                    out["roi_ann_min"] = safe_annualize_roi(theoretical_min / capital, days)
+                out["pnl_min_theoretical"] = theoretical_min
+        elif strategy == "BULL_PUT_SPREAD":
+            sell_strike = float(params["sell_strike"])
+            buy_strike = float(params["buy_strike"])
+            net_credit = float(params["net_credit"])
+            spread_width = sell_strike - buy_strike
+            theoretical_min = (net_credit - spread_width) * 100.0
+            sampled_min = out.get("pnl_min", float("nan"))
+            max_profit = net_credit * 100.0
+            if _should_override(sampled_min, theoretical_min, max_profit=max_profit):
+                out["pnl_min"] = theoretical_min
+                capital = capital_contract if np.isfinite(capital_contract) and capital_contract > 0 else (spread_width - net_credit) * 100.0
+                if np.isfinite(capital) and capital > 0:
+                    out["roi_ann_min"] = safe_annualize_roi(theoretical_min / capital, days)
+                out["pnl_min_theoretical"] = theoretical_min
+        elif strategy == "IRON_CONDOR":
+            put_short = float(params["put_short_strike"])
+            put_long = float(params["put_long_strike"])
+            call_short = float(params["call_short_strike"])
+            call_long = float(params["call_long_strike"])
+            net_credit = float(params["net_credit"])
+            put_width = put_short - put_long
+            call_width = call_long - call_short
+            worst_width = max(put_width, call_width)
+            theoretical_min = (net_credit - worst_width) * 100.0
+            sampled_min = out.get("pnl_min", float("nan"))
+            if _should_override(sampled_min, theoretical_min):
+                out["pnl_min"] = theoretical_min
+                capital = capital_contract if np.isfinite(capital_contract) and capital_contract > 0 else (worst_width - net_credit) * 100.0
+                if np.isfinite(capital) and capital > 0:
+                    out["roi_ann_min"] = safe_annualize_roi(theoretical_min / capital, days)
+                out["pnl_min_theoretical"] = theoretical_min
+    except Exception:
+        pass
     
     return out
