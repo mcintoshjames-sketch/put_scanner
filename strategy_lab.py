@@ -4694,7 +4694,7 @@ with tabs[0]:
                         
                         st.dataframe(
                             pd.DataFrame(contrib_data),
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True
                         )
             
@@ -4704,7 +4704,7 @@ with tabs[0]:
             st.subheader("Greeks by Underlying")
             greeks_df = portfolio_mgr.get_greeks_by_underlying()
             if not greeks_df.empty:
-                st.dataframe(greeks_df, use_container_width=True, hide_index=True)
+                st.dataframe(greeks_df, width='stretch', hide_index=True)
             
             st.divider()
             
@@ -4712,7 +4712,7 @@ with tabs[0]:
             st.subheader("Position Details")
             pos_df = portfolio_mgr.get_positions_df()
             if not pos_df.empty:
-                st.dataframe(pos_df, use_container_width=True, hide_index=True)
+                st.dataframe(pos_df, width='stretch', hide_index=True)
             
             # Last refresh timestamp
             if portfolio_mgr.last_refresh:
@@ -7859,7 +7859,7 @@ with tabs[10]:
                         y=alt.Y("count:Q", title="Frequency"),
                         tooltip=["pnl", "count"],
                     )
-                    st.altair_chart(base_chart, use_container_width=True)
+                    st.altair_chart(base_chart, width='stretch')
                 except Exception:
                     st.warning("Could not render histogram (non-finite bin edges). Showing summary metrics only.", icon="⚠️")
 
@@ -8142,7 +8142,7 @@ with tabs[13]:
             y=alt.Y("Total_P&L:Q", title="Total P&L per contract (USD)"),
             tooltip=list(df_stress.columns),
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width='stretch')
 
         worst = float(df_stress["Total_P&L"].min())
         best = float(df_stress["Total_P&L"].max())
@@ -8565,7 +8565,7 @@ with tabs[14]:
                 y=alt.Y("count()", title="Paths"),
                 tooltip=[alt.Tooltip("count()", title="Paths")]
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width='stretch')
 
         st.caption(
             "Loss probabilities based on a GBM simulation with 50k paths, IV defaulted to 20% if missing, and 1 day used when DTE is 0.")
