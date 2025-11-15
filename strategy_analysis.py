@@ -816,7 +816,7 @@ def analyze_cc(ticker, *, min_days=0, days_limit, min_otm, min_oi, max_spread, m
             }
             try:
                 prelim = score
-                mc_result = _maybe_mc("CC", mc_params, rf=risk_free, mu=0.07, prelim_score=prelim, perf_cfg=perf_cfg, exp_counter=mc_counter)
+                mc_result = _maybe_mc("CC", mc_params, rf=risk_free, mu=0.03, prelim_score=prelim, perf_cfg=perf_cfg, exp_counter=mc_counter)
                 mc_expected_pnl = mc_result['pnl_expected']
                 mc_roi_ann = mc_result['roi_ann_expected']
                 mc_pnl_p5 = mc_result.get('pnl_p5', float("nan"))

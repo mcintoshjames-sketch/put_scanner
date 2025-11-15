@@ -3938,6 +3938,14 @@ def _add_kelly_sizing(df: pd.DataFrame, strategy_type: str) -> pd.DataFrame:
             current_iv = float(row.get('IV', 25.0)) / 100.0 if 'IV' in row else 0.25
             historical_iv = current_iv  # Could enhance with actual historical IV
             
+            # Safety check: Zero out Kelly if MC Expected P&L is negative
+            mc_expected_pnl = float(row.get('MC_ExpectedPnL', float('nan')))
+            if mc_expected_pnl == mc_expected_pnl and mc_expected_pnl < 0:
+                # MC shows negative expectation - don't size position
+                kelly_sizes.append(0)
+                kelly_fractions.append(0)
+                continue
+            
             # Calculate Kelly sizing
             result = calculate_position_size(
                 capital=capital,
@@ -8272,7 +8280,7 @@ with tabs[14]:
             params = dict(S0=price, days=days_for_mc, iv=iv_for_calc,
                           Kc=strike, call_premium=prem, div_ps_annual=div_ps_annual)
             # Use realistic equity drift for CC (7% annual = historical equity returns)
-            mc = mc_pnl("CC", params, n_paths=int(paths), mu=0.07, seed=None)
+            mc = mc_pnl("CC", params, n_paths=int(paths), mu=0.03, seed=None)
 
         elif strat_choice == "COLLAR":
             kc = float(_safe_float(row.get("CallStrike")))
@@ -8332,10 +8340,10 @@ with tabs[14]:
 
             if simulate_strategy == "FENCE":
                 st.warning("⚠️ No underlying shares detected — simulating two‑leg Fence (short call + long put) with unlimited upside risk.")
-                mc = mc_pnl("FENCE", params, n_paths=int(paths), mu=0.07, seed=None)
+                mc = mc_pnl("FENCE", params, n_paths=int(paths), mu=0.03, seed=None)
             else:
-                # Use realistic equity drift for Collar (7% annual)
-                mc = mc_pnl("COLLAR", params, n_paths=int(paths), mu=0.07, seed=None)
+                # Use realistic equity drift for Collar (3% annual - conservative)
+                mc = mc_pnl("COLLAR", params, n_paths=int(paths), mu=0.03, seed=None)
 
         elif strat_choice == "IRON_CONDOR":
             # Iron Condor structure
