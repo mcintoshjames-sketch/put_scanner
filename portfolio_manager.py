@@ -329,12 +329,34 @@ class PortfolioManager:
         # Convert positions to dict format for var_calculator
         positions_data = []
         for pos in self.positions:
-            positions_data.append({
+            # For stocks, use current_price as underlying_price
+            # For options, use underlying_price (fallback to strike if needed)
+            if pos.position_type == 'STOCK':
+                underlying_price = pos.current_price
+            else:
+                underlying_price = pos.underlying_price if pos.underlying_price > 0 else (pos.strike or 0)
+            
+            if underlying_price == 0:
+                logger.warning(f"Position {pos.symbol} has zero underlying price, skipping from VaR")
+                continue
+            
+            # Build position dict with all needed fields
+            pos_dict = {
                 'symbol': pos.symbol,
-                'quantity': pos.quantity,
-                'current_price': pos.current_price if pos.position_type == 'STOCK' else pos.underlying_price,
-                'position_type': pos.position_type
-            })
+                'quantity': pos.quantity,  # Signed: + for long, - for short
+                'underlying_price': underlying_price,
+                'position_type': pos.position_type,
+                'market_value': pos.market_value,
+            }
+            
+            # Add option-specific fields
+            if pos.position_type in ['CALL', 'PUT']:
+                pos_dict['option_price'] = pos.current_price
+                pos_dict['delta'] = pos.delta
+                pos_dict['strike'] = pos.strike
+                pos_dict['expiration'] = pos.expiration
+            
+            positions_data.append(pos_dict)
         
         try:
             var_result = calculate_portfolio_var(  # type: ignore

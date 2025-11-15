@@ -62,6 +62,13 @@ from options_math import (
     _norm_cdf,
 )
 
+# Risk management modules
+try:
+    from risk_metrics.position_sizing import calculate_position_size, kelly_batch_analysis
+    KELLY_AVAILABLE = True
+except ImportError:
+    KELLY_AVAILABLE = False
+
 # ---------- Streamlit context guards & helpers ----------
 import logging
 try:
@@ -3245,6 +3252,41 @@ with st.sidebar:
     per_contract_cap = None if per_contract_cap == 0 else float(
         per_contract_cap)
     
+    # Kelly Position Sizing controls
+    st.divider()
+    st.subheader("💰 Position Sizing")
+    if KELLY_AVAILABLE:
+        enable_kelly = st.checkbox(
+            "Enable Kelly Criterion",
+            value=True,
+            key="enable_kelly",
+            help="Calculate optimal position sizes based on win probability and payoff ratios"
+        )
+        
+        if enable_kelly:
+            kelly_multiplier = st.slider(
+                "Kelly Multiplier",
+                min_value=0.1,
+                max_value=0.5,
+                value=0.25,
+                step=0.05,
+                key="kelly_multiplier",
+                help="Fraction of full Kelly to use (0.25 = Quarter Kelly, recommended for safety)"
+            )
+            
+            portfolio_capital = st.number_input(
+                "Portfolio Capital ($)",
+                min_value=1000,
+                max_value=10000000,
+                value=50000,
+                step=5000,
+                key="portfolio_capital",
+                help="Total capital available for position sizing"
+            )
+    else:
+        st.info("💡 Kelly Criterion module not available")
+        st.session_state['enable_kelly'] = False
+    
     # Expiration safety controls
     st.divider()
     st.subheader("⚠️ Expiration Safety")
@@ -3827,6 +3869,88 @@ df_bear_call_spread = _ensure_risk_and_assignment(df_bear_call_spread, "BEAR_CAL
 df_pmcc = _ensure_risk_and_assignment(df_pmcc, "PMCC")
 df_synthetic_collar = _ensure_risk_and_assignment(df_synthetic_collar, "SYNTHETIC_COLLAR")
 
+# Add Kelly position sizing if enabled
+def _add_kelly_sizing(df: pd.DataFrame, strategy_type: str) -> pd.DataFrame:
+    """Add Kelly position sizing columns to strategy results."""
+    if df.empty or not st.session_state.get('enable_kelly', False):
+        return df
+    
+    if not KELLY_AVAILABLE:
+        return df
+    
+    capital = st.session_state.get('portfolio_capital', 50000)
+    kelly_mult = st.session_state.get('kelly_multiplier', 0.25)
+    
+    df = df.copy()
+    kelly_sizes = []
+    kelly_fractions = []
+    
+    for _, row in df.iterrows():
+        try:
+            # Extract strategy-specific parameters
+            if strategy_type in ['CSP', 'CC']:
+                credit = float(row.get('Premium', 0)) * 100  # Premium per contract
+                max_loss = float(row.get('Collateral', 0))  # Collateral/risk
+                prob_itm = float(row.get('Delta', 0.30)) if 'Delta' in row else 0.30
+                pop = 1.0 - prob_itm  # Probability of profit
+            elif strategy_type == 'IRON_CONDOR':
+                credit = float(row.get('NetCredit', 0)) * 100
+                max_loss = float(row.get('MaxLoss', 0))
+                # IC uses POP from both sides
+                pop = float(row.get('POP', 0.65)) if 'POP' in row else 0.65
+                prob_itm = 1.0 - pop
+            elif strategy_type in ['BULL_PUT_SPREAD', 'BEAR_CALL_SPREAD']:
+                credit = float(row.get('Credit', 0)) * 100
+                width = float(row.get('Width', 5))
+                max_loss = (width * 100) - credit
+                prob_itm = float(row.get('Delta', 0.30)) if 'Delta' in row else 0.30
+                pop = 1.0 - prob_itm
+            else:
+                kelly_sizes.append(0)
+                kelly_fractions.append(0)
+                continue
+            
+            if credit <= 0 or max_loss <= 0:
+                kelly_sizes.append(0)
+                kelly_fractions.append(0)
+                continue
+            
+            # Get current IV and historical IV if available
+            current_iv = float(row.get('IV', 25.0)) / 100.0 if 'IV' in row else 0.25
+            historical_iv = current_iv  # Could enhance with actual historical IV
+            
+            # Calculate Kelly sizing
+            result = calculate_position_size(
+                capital=capital,
+                strategy_type=strategy_type,
+                expected_credit=credit,
+                max_loss=max_loss,
+                probability_itm=prob_itm,
+                pop=pop,
+                current_iv=current_iv,
+                historical_iv=historical_iv,
+                kelly_multiplier=kelly_mult
+            )
+            
+            kelly_sizes.append(result.recommended_size)
+            kelly_fractions.append(result.recommended_fraction * 100)  # As percentage
+            
+        except Exception as e:
+            kelly_sizes.append(0)
+            kelly_fractions.append(0)
+    
+    df['KellySize'] = kelly_sizes
+    df['Kelly%'] = kelly_fractions
+    
+    return df
+
+if st.session_state.get('enable_kelly', False):
+    df_csp = _add_kelly_sizing(df_csp, 'CSP')
+    df_cc = _add_kelly_sizing(df_cc, 'CC')
+    df_iron_condor = _add_kelly_sizing(df_iron_condor, 'IRON_CONDOR')
+    df_bull_put_spread = _add_kelly_sizing(df_bull_put_spread, 'BULL_PUT_SPREAD')
+    df_bear_call_spread = _add_kelly_sizing(df_bear_call_spread, 'BEAR_CALL_SPREAD')
+
 # Apply expiration safety filtering
 allow_nonstandard = st.session_state.get("allow_nonstandard", False)
 block_high_risk_multileg = st.session_state.get("block_high_risk_multileg", True)
@@ -4282,17 +4406,73 @@ with tabs[0]:
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Delta", metrics.get('Total Delta', '0.00'))
-                st.metric("Total Gamma", metrics.get('Total Gamma', '0.00'))
+                st.metric(
+                    "Total Delta",
+                    metrics.get('Total Delta', '0.00'),
+                    help=(
+                        "Portfolio sensitivity to a $1 move in the underlying stocks. "
+                        "Roughly, how many shares you are effectively long (positive) or short (negative)."
+                    ),
+                )
+                st.metric(
+                    "Total Gamma",
+                    metrics.get('Total Gamma', '0.00'),
+                    help=(
+                        "Rate of change of delta for a $1 move in the underlying. "
+                        "High gamma means delta will change quickly, especially near expiry."
+                    ),
+                )
             with col2:
-                st.metric("Total Vega", metrics.get('Total Vega', '0.00'))
-                st.metric("Total Theta", metrics.get('Total Theta', '0.00'))
+                st.metric(
+                    "Total Vega",
+                    metrics.get('Total Vega', '0.00'),
+                    help=(
+                        "Portfolio sensitivity to a 1 percentage point change in implied volatility. "
+                        "Positive vega benefits from volatility increasing; negative vega benefits from it falling."
+                    ),
+                )
+                st.metric(
+                    "Total Theta",
+                    metrics.get('Total Theta', '0.00'),
+                    help=(
+                        "Approximate daily time decay of the portfolio (in dollars per day). "
+                        "Negative theta means the portfolio loses value as time passes, all else equal."
+                    ),
+                )
             with col3:
-                st.metric("Net Value", metrics.get('Net Value', '$0'))
-                st.metric("Gross Exposure", metrics.get('Gross Exposure', '$0'))
+                st.metric(
+                    "Net Value",
+                    metrics.get('Net Value', '$0'),
+                    help=(
+                        "Current net liquidation value of all positions in the portfolio, "
+                        "including long and short option premiums."
+                    ),
+                )
+                st.metric(
+                    "Gross Exposure",
+                    metrics.get('Gross Exposure', '$0'),
+                    help=(
+                        "Sum of absolute position values (long + short). "
+                        "Higher gross exposure means more capital is at work, regardless of hedging."
+                    ),
+                )
             with col4:
-                st.metric("Positions", metrics.get('Positions', '0'))
-                st.metric("Max Position %", metrics.get('Max Position %', '0%'))
+                st.metric(
+                    "Positions",
+                    metrics.get('Positions', '0'),
+                    help=(
+                        "Total number of open positions (stocks and options). "
+                        "Useful for spotting whether the portfolio is concentrated or highly fragmented."
+                    ),
+                )
+                st.metric(
+                    "Max Position %",
+                    metrics.get('Max Position %', '0%'),
+                    help=(
+                        "Largest single position as a percentage of portfolio net value. "
+                        "Higher values indicate concentration risk in one ticker or strategy."
+                    ),
+                )
             
             # Risk alerts
             alerts = portfolio_mgr.check_risk_alerts()
@@ -4337,6 +4517,10 @@ with tabs[0]:
                         # Get unique symbols from positions
                         symbols = list(set(pos.symbol for pos in positions))
                         
+                        if not symbols:
+                            st.warning("No symbols found in portfolio")
+                            st.stop()
+                        
                         # Fetch historical prices (252 trading days ~= 1 year)
                         import yfinance as yf
                         from datetime import timedelta
@@ -4344,15 +4528,42 @@ with tabs[0]:
                         end_date = datetime.now()
                         start_date = end_date - timedelta(days=365)
                         
-                        hist_prices = yf.download(
+                        # Download data
+                        data = yf.download(
                             symbols,
                             start=start_date,
                             end=end_date,
                             progress=False
-                        )['Adj Close']
+                        )
                         
+                        # Handle different yfinance return formats
+                        if data.empty:
+                            st.error("No historical data retrieved")
+                            st.stop()
+                        
+                        # Check if columns are MultiIndex
+                        if isinstance(data.columns, pd.MultiIndex):
+                            # MultiIndex format: extract Adj Close level
+                            if 'Adj Close' in data.columns.get_level_values(0):
+                                hist_prices = data.xs('Adj Close', level=0, axis=1)
+                            else:
+                                # Try Close as fallback
+                                hist_prices = data.xs('Close', level=0, axis=1)
+                        else:
+                            # Simple columns format
+                            if 'Adj Close' in data.columns:
+                                hist_prices = data[['Adj Close']]
+                                hist_prices.columns = symbols
+                            elif 'Close' in data.columns:
+                                hist_prices = data[['Close']]
+                                hist_prices.columns = symbols
+                            else:
+                                st.error(f"Cannot find price data. Available columns: {data.columns.tolist()}")
+                                st.stop()
+                        
+                        # Ensure we have a DataFrame
                         if isinstance(hist_prices, pd.Series):
-                            hist_prices = hist_prices.to_frame(name=symbols[0])
+                            hist_prices = hist_prices.to_frame()
                         
                         # Calculate VaR
                         var_result = portfolio_mgr.calculate_var(
@@ -4505,6 +4716,9 @@ with tabs[1]:
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
                      "IV", "POEW", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Collateral", "RiskType", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+        # Add Kelly sizing columns if enabled
+        if st.session_state.get('enable_kelly', False) and 'KellySize' in df_csp.columns:
+            show_cols.extend(['Kelly%', 'KellySize'])
         show_cols = [c for c in show_cols if c in df_csp.columns]
 
         # Show expiration risk warnings if any WARN actions exist
@@ -4547,6 +4761,9 @@ with tabs[2]:
     else:
         show_cols = ["Strategy", "Ticker", "Price", "Exp", "Days", "Strike", "Premium", "OTM%", "ROI%_ann",
                      "IV", "POEC", "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "AssignProb", "RiskType", "DivYld%", "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+        # Add Kelly sizing columns if enabled
+        if st.session_state.get('enable_kelly', False) and 'KellySize' in df_cc.columns:
+            show_cols.extend(['Kelly%', 'KellySize'])
         show_cols = [c for c in show_cols if c in df_cc.columns]
 
         # Show expiration risk warnings
@@ -4670,6 +4887,9 @@ with tabs[6]:
                      "BreakevenLower", "BreakevenUpper", "Range",
                      "PutCushionσ", "CallCushionσ", "ProbMaxProfit",
                      "PutSpread%", "CallSpread%", "PutShortOI", "CallShortOI", "IV", "ExpType", "ExpRisk", "Score"]
+        # Add Kelly sizing columns if enabled
+        if st.session_state.get('enable_kelly', False) and 'KellySize' in df_iron_condor.columns:
+            show_cols.extend(['Kelly%', 'KellySize'])
         show_cols = [c for c in show_cols if c in df_iron_condor.columns]
         
         # Show expiration risk warnings - STRONGEST WARNING
@@ -4713,6 +4933,9 @@ with tabs[7]:
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
                      "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "RiskType",
                      "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+        # Add Kelly sizing columns if enabled
+        if st.session_state.get('enable_kelly', False) and 'KellySize' in df_bull_put_spread.columns:
+            show_cols.extend(['Kelly%', 'KellySize'])
         show_cols = [c for c in show_cols if c in df_bull_put_spread.columns]
         
         # Show expiration risk warnings
@@ -4754,6 +4977,9 @@ with tabs[8]:
                      "Δ", "Γ", "Θ", "Vρ", "IV", "POEW",
                      "CushionSigma", "Theta/Gamma", "Spread%", "OI", "Capital", "RiskType",
                      "DaysToEarnings", "ExpType", "ExpRisk", "Score"]
+        # Add Kelly sizing columns if enabled
+        if st.session_state.get('enable_kelly', False) and 'KellySize' in df_bear_call_spread.columns:
+            show_cols.extend(['Kelly%', 'KellySize'])
         show_cols = [c for c in show_cols if c in df_bear_call_spread.columns]
         
         # Show expiration risk warnings

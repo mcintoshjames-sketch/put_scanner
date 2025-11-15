@@ -1,6 +1,6 @@
 # providers/schwab_provider.py — Schwab API adapter implementing OptionsProvider interface
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import date
 import pandas as pd
 from providers import OptionsProvider
@@ -94,3 +94,63 @@ class SchwabProvider(OptionsProvider):
     def reset_token_file(self):
         """Backup/remove the token file so a fresh OAuth run can occur."""
         return self.client.reset_token_file()
+
+    def get_account_numbers(self) -> List[dict]:
+        """
+        Retrieve account numbers from Schwab API.
+        Returns list of {accountNumber: plain text, hashValue: encrypted} pairs.
+        
+        Returns:
+            List of account dictionaries with accountNumber and hashValue
+        """
+        try:
+            response = self.client.client.get_account_numbers()
+            accounts = response.json() if hasattr(response, 'json') else response
+            return accounts
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve account numbers: {e}")
+
+    def get_account_info(self, account_id: str) -> dict:
+        """
+        Get detailed account information including balances and positions.
+        
+        Args:
+            account_id: Account hash value (encrypted account number)
+        
+        Returns:
+            Dictionary with account details including positions
+        """
+        try:
+            # Try to use Account.Fields.POSITIONS if available
+            try:
+                fields = self.client.client.Account.Fields.POSITIONS  # type: ignore
+                response = self.client.client.get_account(account_id, fields=fields)
+            except (AttributeError, Exception):
+                # Fallback to basic get_account
+                response = self.client.client.get_account(account_id)
+            
+            account_data = response.json() if hasattr(response, 'json') else response
+            return account_data
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve account info: {e}")
+
+    def get_quote(self, symbol: str) -> dict:
+        """
+        Get real-time quote for a symbol.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Dictionary with quote data including lastPrice
+        """
+        try:
+            response = self.client.client.get_quote(symbol)
+            quote_data = response.json() if hasattr(response, 'json') else response
+            
+            # The response might be nested, extract the actual quote
+            if isinstance(quote_data, dict) and symbol in quote_data:
+                return quote_data[symbol]
+            return quote_data
+        except Exception as e:
+            raise RuntimeError(f"Failed to get quote for {symbol}: {e}")

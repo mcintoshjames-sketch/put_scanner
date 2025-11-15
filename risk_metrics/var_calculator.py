@@ -21,12 +21,178 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import logging
+from math import log, sqrt, exp
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 logger = logging.getLogger(__name__)
+
+# Standard US equity options contract multiplier
+CONTRACT_MULTIPLIER = 100
+
+
+def _bs_call_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Calculate Black-Scholes call option price.
+    
+    Args:
+        S: Current underlying price
+        K: Strike price
+        T: Time to expiration in years
+        r: Risk-free rate
+        sigma: Implied volatility
+        
+    Returns:
+        Call option price per share
+    """
+    if T <= 0:
+        return max(S - K, 0.0)
+    
+    if sigma <= 0:
+        # Zero vol case: immediate payoff
+        return max(S - K, 0.0)
+    
+    d1 = (log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    
+    return S * stats.norm.cdf(d1) - K * exp(-r * T) * stats.norm.cdf(d2)
+
+
+def _bs_put_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Calculate Black-Scholes put option price.
+    
+    Args:
+        S: Current underlying price
+        K: Strike price
+        T: Time to expiration in years
+        r: Risk-free rate
+        sigma: Implied volatility
+        
+    Returns:
+        Put option price per share
+    """
+    if T <= 0:
+        return max(K - S, 0.0)
+    
+    if sigma <= 0:
+        # Zero vol case: immediate payoff
+        return max(K - S, 0.0)
+    
+    d1 = (log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    
+    return K * exp(-r * T) * stats.norm.cdf(-d2) - S * stats.norm.cdf(-d1)
+
+
+def _implied_vol_call_simple(C0: float, S: float, K: float, T: float, r: float) -> float:
+    """Estimate implied volatility for a call option using simple search.
+    
+    Args:
+        C0: Current call price
+        S: Current underlying price
+        K: Strike price
+        T: Time to expiration in years
+        r: Risk-free rate
+        
+    Returns:
+        Estimated implied volatility
+    """
+    if T <= 0 or C0 <= 0:
+        return 0.30  # Default 30% vol
+    
+    # Intrinsic value
+    intrinsic = max(S - K, 0.0)
+    if C0 <= intrinsic + 0.01:
+        return 0.10  # Very low vol for deep ITM
+    
+    # For ATM/OTM options, use approximation as initial guess
+    # C ≈ 0.4 * S * σ * sqrt(T) for ATM
+    time_value = C0 - intrinsic
+    if time_value > 0 and T > 0:
+        sigma_guess = time_value / (0.4 * S * np.sqrt(T))
+        # Sanity check the guess
+        if 0.05 <= sigma_guess <= 2.0:
+            # Use the approximation directly if reasonable
+            return sigma_guess
+    
+    # Simple bisection search as fallback
+    vol_low, vol_high = 0.01, 3.0
+    
+    for iteration in range(30):  # Increase iterations
+        vol_mid = (vol_low + vol_high) / 2.0
+        price_mid = _bs_call_price(S, K, T, r, vol_mid)
+        
+        if abs(price_mid - C0) < 0.001:  # Tighter tolerance
+            return vol_mid
+        
+        if price_mid < C0:
+            vol_low = vol_mid
+        else:
+            vol_high = vol_mid
+    
+    # If bisection didn't converge, return midpoint but warn if it's extreme
+    result = (vol_low + vol_high) / 2.0
+    if result < 0.10:
+        logger.warning(f"IV solver returned very low vol {result:.4f} for C0=${C0:.2f}, S=${S:.2f}, K=${K:.2f}, T={T:.4f}")
+        # Use approximation as fallback
+        if time_value > 0 and T > 0:
+            result = max(time_value / (0.4 * S * np.sqrt(T)), 0.20)  # Minimum 20% vol
+    return result
+
+
+def _implied_vol_put_simple(P0: float, S: float, K: float, T: float, r: float) -> float:
+    """Estimate implied volatility for a put option using simple search.
+    
+    Args:
+        P0: Current put price
+        S: Current underlying price
+        K: Strike price
+        T: Time to expiration in years
+        r: Risk-free rate
+        
+    Returns:
+        Estimated implied volatility
+    """
+    if T <= 0 or P0 <= 0:
+        return 0.30  # Default 30% vol
+    
+    # Intrinsic value
+    intrinsic = max(K - S, 0.0)
+    if P0 <= intrinsic + 0.01:
+        return 0.10  # Very low vol for deep ITM
+    
+    # For ATM/OTM options, use approximation as initial guess
+    time_value = P0 - intrinsic
+    if time_value > 0 and T > 0:
+        sigma_guess = time_value / (0.4 * S * np.sqrt(T))
+        # Sanity check the guess
+        if 0.05 <= sigma_guess <= 2.0:
+            return sigma_guess
+    
+    # Simple bisection search as fallback
+    vol_low, vol_high = 0.01, 3.0
+    
+    for iteration in range(30):  # Increase iterations
+        vol_mid = (vol_low + vol_high) / 2.0
+        price_mid = _bs_put_price(S, K, T, r, vol_mid)
+        
+        if abs(price_mid - P0) < 0.001:  # Tighter tolerance
+            return vol_mid
+        
+        if price_mid < P0:
+            vol_low = vol_mid
+        else:
+            vol_high = vol_mid
+    
+    # If bisection didn't converge, return midpoint but warn if it's extreme
+    result = (vol_low + vol_high) / 2.0
+    if result < 0.10:
+        logger.warning(f"IV solver returned very low vol {result:.4f} for P0=${P0:.2f}, S=${S:.2f}, K=${K:.2f}, T={T:.4f}")
+        # Use approximation as fallback
+        if time_value > 0 and T > 0:
+            result = max(time_value / (0.4 * S * np.sqrt(T)), 0.20)  # Minimum 20% vol
+    return result
 
 
 @dataclass
@@ -240,6 +406,8 @@ def calculate_cvar(
     return var_result.cvar_amount or 0.0, var_result.cvar_percent or 0.0
 
 
+
+
 def calculate_portfolio_var(
     positions: List[Dict],
     historical_prices: pd.DataFrame,
@@ -247,14 +415,26 @@ def calculate_portfolio_var(
     time_horizon_days: int = 1,
     method: str = 'historical'
 ) -> VaRResult:
-    """Calculate portfolio-level VaR accounting for position correlations.
+    """Calculate portfolio-level VaR with proper risk modeling for each position type.
+    
+    Uses scenario-based simulation:
+    - For stocks: P&L = quantity * price * return
+    - For options: P&L = delta * quantity * 100 * underlying_price * return
+    - For long options: Cap max loss at premium paid
+    - For short options: No cap on losses
     
     Args:
         positions: List of position dicts with keys:
-                   - symbol: str
-                   - quantity: float
-                   - current_price: float
+                   - symbol: str (underlying ticker)
+                   - quantity: float (signed: + long, - short)
+                   - underlying_price: float (current underlying price)
                    - position_type: str ('STOCK', 'CALL', 'PUT')
+                   - market_value: float (current position value)
+                   For options additionally:
+                   - option_price: float (current option premium per share)
+                   - delta: float (option delta)
+                   - strike: float (strike price)
+                   - expiration: str (YYYY-MM-DD)
         historical_prices: DataFrame with columns = symbols, rows = dates
         confidence_level: Confidence level (0.90, 0.95, or 0.99)
         time_horizon_days: Time horizon in days
@@ -273,12 +453,20 @@ def calculate_portfolio_var(
             calculated_at=datetime.now()
         )
     
-    # Calculate portfolio value
-    portfolio_value = sum(
-        pos['quantity'] * pos['current_price'] * 
-        (100 if pos.get('position_type') in ['CALL', 'PUT'] else 1)
-        for pos in positions
-    )
+    # Calculate total portfolio value (sum of absolute market values)
+    portfolio_value = 0.0
+    for pos in positions:
+        if 'market_value' in pos:
+            portfolio_value += abs(pos['market_value'])
+        else:
+            # Calculate market value based on position type
+            if pos.get('position_type') in ['CALL', 'PUT']:
+                # Options: quantity (contracts) * option_price (per share) * CONTRACT_MULTIPLIER
+                pos_value = abs(pos['quantity']) * pos.get('option_price', 0) * CONTRACT_MULTIPLIER
+            else:
+                # Stock: quantity * stock_price
+                pos_value = abs(pos['quantity']) * pos.get('underlying_price', 0)
+            portfolio_value += pos_value
     
     if portfolio_value == 0:
         return VaRResult(
@@ -313,52 +501,174 @@ def calculate_portfolio_var(
             calculated_at=datetime.now()
         )
     
-    # Calculate portfolio returns (weighted by position value)
-    # Get minimum common length
+    # Get minimum common length across all return series
+    # Get minimum common length across all return series
     min_length = min(len(returns) for returns in returns_dict.values())
     
-    portfolio_returns = np.zeros(min_length)
+    # Build scenario-based P&L in dollar space using proper option repricing
+    # For options: reprice under each scenario using Black-Scholes
+    # For stocks: use linear P&L = quantity * price * return
+    portfolio_pnl = np.zeros(min_length)
     position_contributions = {}
+    
+    # Constants for option pricing
+    RISK_FREE_RATE = 0.03  # 3% risk-free rate
+    TRADING_DAYS_PER_YEAR = 252.0
     
     for pos in positions:
         symbol = pos['symbol']
         if symbol not in returns_dict:
             continue
-            
-        # Position value
-        pos_value = pos['quantity'] * pos['current_price'] * \
-                    (100 if pos.get('position_type') in ['CALL', 'PUT'] else 1)
-        weight = pos_value / portfolio_value
         
-        # Contribution to portfolio returns
         symbol_returns = returns_dict[symbol][-min_length:]
-        portfolio_returns += weight * symbol_returns
+        quantity = pos['quantity']  # Signed: + for long, - for short
+        underlying_price = pos['underlying_price']
+        position_type = pos['position_type']
         
-        # Track contribution (for risk attribution)
-        position_contributions[symbol] = weight * portfolio_value
-    
-    # Calculate VaR based on method
-    if method == 'parametric':
-        volatility = float(np.std(portfolio_returns))
-        mean_return = float(np.mean(portfolio_returns))
+        # Calculate position market value (consistent units)
+        if position_type in ['CALL', 'PUT']:
+            option_price = pos.get('option_price', 0.0)
+            position_value = abs(quantity) * option_price * CONTRACT_MULTIPLIER
+        else:
+            position_value = abs(quantity) * underlying_price
         
-        var_result = calculate_parametric_var(
-            portfolio_value=portfolio_value,
-            volatility=volatility,
-            mean_return=mean_return,
-            confidence_level=confidence_level,
-            time_horizon_days=time_horizon_days
-        )
-    else:  # historical
-        var_result = calculate_historical_var(
-            portfolio_value=portfolio_value,
-            historical_returns=portfolio_returns,
-            confidence_level=confidence_level,
-            time_horizon_days=time_horizon_days
-        )
+        if position_type == 'STOCK':
+            # Stock P&L: quantity * spot price * return
+            position_pnl = quantity * underlying_price * symbol_returns
+            
+        else:  # CALL or PUT option - use Black-Scholes repricing
+            option_price = pos.get('option_price', 0.0)
+            strike = pos.get('strike', underlying_price)
+            expiration_str = pos.get('expiration', '')
+            
+            logger.info(f"Processing {position_type} option: {symbol}")
+            logger.info(f"  Underlying price: ${underlying_price:.2f}")
+            logger.info(f"  Option price: ${option_price:.2f}/share")
+            logger.info(f"  Strike: ${strike:.2f}")
+            logger.info(f"  Expiration: {expiration_str}")
+            logger.info(f"  Quantity: {quantity}")
+            
+            # Validate data integrity
+            if abs(underlying_price - strike) < 0.01:
+                logger.warning(
+                    f"⚠️ Underlying price (${underlying_price:.2f}) equals strike (${strike:.2f}). "
+                    f"This is suspicious and likely indicates the underlying price fetch failed. "
+                    f"VaR calculation will be inaccurate!"
+                )
+            
+            # Calculate time to expiration in years
+            try:
+                exp_date = datetime.strptime(expiration_str, '%Y-%m-%d')
+                days_to_exp = (exp_date - datetime.now()).days
+                T0 = max(days_to_exp / TRADING_DAYS_PER_YEAR, 1.0 / TRADING_DAYS_PER_YEAR)
+                logger.info(f"  Days to expiration: {days_to_exp}, T0: {T0:.4f} years")
+            except Exception as e:
+                T0 = 30.0 / TRADING_DAYS_PER_YEAR  # Default 30 days
+                logger.warning(f"  Could not parse expiration '{expiration_str}': {e}, using T0={T0:.4f}")
+            
+            # Estimate implied volatility from current option price
+            if position_type == 'CALL':
+                sigma = _implied_vol_call_simple(option_price, underlying_price, strike, T0, RISK_FREE_RATE)
+            else:  # PUT
+                sigma = _implied_vol_put_simple(option_price, underlying_price, strike, T0, RISK_FREE_RATE)
+            
+            logger.info(f"  Implied volatility: {sigma:.4f} ({sigma*100:.2f}%)")
+            
+            # For each scenario, reprice the option
+            position_pnl = np.zeros(len(symbol_returns))
+            
+            for i, ret in enumerate(symbol_returns):
+                # New underlying price under this scenario
+                S1 = underlying_price * (1 + ret)
+                
+                # Time to expiration reduced by 1 day
+                T1 = max(T0 - 1.0 / TRADING_DAYS_PER_YEAR, 0.0)
+                
+                # Reprice option
+                if position_type == 'CALL':
+                    C1 = _bs_call_price(S1, strike, T1, RISK_FREE_RATE, sigma)
+                else:  # PUT
+                    C1 = _bs_put_price(S1, strike, T1, RISK_FREE_RATE, sigma)
+                
+                # P&L = change in option value * contracts * multiplier
+                # Note: (C1 - option_price) is per-share change
+                position_pnl[i] = quantity * (C1 - option_price) * CONTRACT_MULTIPLIER
+            
+            logger.info(f"  Position P&L range: ${position_pnl.min():.2f} to ${position_pnl.max():.2f}")
+            logger.info(f"  95th percentile loss: ${-np.percentile(position_pnl, 5):.2f}")
+            
+            # No need to cap losses - Black-Scholes naturally bounds option prices at zero
+        
+        # Accumulate to portfolio P&L (in dollars)
+        portfolio_pnl += position_pnl
+        
+        # Track position contribution (for risk attribution)
+        position_contributions[symbol] = position_value
     
-    # Add position contributions
-    var_result.position_contributions = position_contributions
+    # Now portfolio_pnl[t] is the dollar P&L for each historical day
+    # Convert to losses (positive = loss, negative = gain)
+    losses = -portfolio_pnl
+    
+    # Scale for multi-day horizon if needed
+    if time_horizon_days > 1:
+        # Use overlapping windows
+        scaled_losses = []
+        for i in range(len(losses) - time_horizon_days + 1):
+            window_loss = np.sum(losses[i:i+time_horizon_days])
+            scaled_losses.append(window_loss)
+        losses = np.array(scaled_losses)
+    
+    # Calculate VaR as percentile of loss distribution
+    # VaR should always be positive (representing a loss amount)
+    percentile_level = confidence_level * 100.0
+    var_dollar = float(np.percentile(losses, percentile_level))
+    
+    # Ensure VaR is non-negative (can't have negative loss)
+    if var_dollar < 0:
+        logger.warning(
+            f"VaR calculation resulted in negative value (${var_dollar:.2f}), "
+            f"indicating most scenarios show gains. Setting VaR to $0. "
+            f"This may indicate data issues (e.g., wrong underlying price)."
+        )
+        var_dollar = 0.0
+    
+    # Debug logging
+    logger.info(f"VaR Calculation Debug:")
+    logger.info(f"  Portfolio value: ${portfolio_value:.2f}")
+    logger.info(f"  Number of scenarios: {len(losses)}")
+    logger.info(f"  Loss distribution: min=${losses.min():.2f}, max=${losses.max():.2f}, mean=${losses.mean():.2f}")
+    logger.info(f"  VaR (95th percentile): ${var_dollar:.2f}")
+    logger.info(f"  Positions: {len(positions)}")
+    for pos in positions:
+        logger.info(f"    {pos['symbol']}: {pos['position_type']}, qty={pos['quantity']}, price=${pos.get('option_price', pos['underlying_price']):.2f}")
+    
+    var_percent = (var_dollar / portfolio_value) * 100.0 if portfolio_value > 0 else 0.0
+    
+    # Calculate CVaR (average of losses at or beyond VaR threshold)
+    tail_losses = losses[losses >= var_dollar]
+    cvar_dollar = float(np.mean(tail_losses)) if len(tail_losses) > 0 else var_dollar
+    cvar_percent = (cvar_dollar / portfolio_value) * 100.0 if portfolio_value > 0 else 0.0
+    
+    # Calculate statistics (convert P&L to returns for volatility/mean)
+    returns_for_stats = portfolio_pnl / portfolio_value if portfolio_value > 0 else portfolio_pnl
+    volatility = float(np.std(returns_for_stats))
+    mean_return = float(np.mean(returns_for_stats))
+    
+    # Create result
+    var_result = VaRResult(
+        var_amount=var_dollar,
+        var_percent=var_percent,
+        confidence_level=confidence_level,
+        time_horizon_days=time_horizon_days,
+        method='historical',
+        cvar_amount=cvar_dollar,
+        cvar_percent=cvar_percent,
+        volatility=volatility,
+        mean_return=mean_return,
+        calculated_at=datetime.now(),
+        data_points=len(portfolio_pnl),
+        position_contributions=position_contributions
+    )
     
     return var_result
 
